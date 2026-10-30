@@ -136,7 +136,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ video, onClose }) 
           layout="vertical"
           initialValues={{ type: 'PF', country: 'RO' }}
           disabled={isProcessing}
-          className="p-4 rounded-xl bg-cream/80 border border-ink/10 space-y-3"
+          className="!p-4 rounded-xl bg-cream/80 border border-ink/10 space-y-3"
         >
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
             <h4 className="text-xs font-semibold text-ink">Date de facturare</h4>
