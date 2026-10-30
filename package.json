@@ -11,6 +11,7 @@
     "start": "node server.ts",
     "build": "vite build",
     "lint": "tsc --noEmit",
+    "test:smoke": "node tests/smoke.mjs",
     "db:migrate": "prisma migrate deploy",
     "postinstall": "prisma generate"
   },
