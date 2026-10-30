@@ -171,6 +171,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ video, onClose }) 
                 name="cui"
                 label={fieldLabel('CUI')}
                 rules={[
+                  { required: true, message: 'Completează CUI-ul.' },
                   {
                     validator: (_: any, value: string) => {
                       const cui = String(value ?? '').trim();
