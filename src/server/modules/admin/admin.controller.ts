@@ -311,11 +311,21 @@ export class AdminController {
   }
 
   /**
-   * User Management - Kill every session and clear the brute-force lockout
+   * User Management - Kill every session and clear the brute-force lockout.
+   * A regular admin can never force a SUPER_ADMIN out.
    */
   public static async logoutAllSessions(req: Request, res: Response) {
+    const actor = (req as any).user;
+
     const target = await db.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    if (target.role === 'SUPER_ADMIN' && actor.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'FORBIDDEN_TARGET_SUPER_ADMIN',
+        message: 'Doar un SUPER_ADMIN poate deconecta un cont SUPER_ADMIN.',
+      });
+    }
 
     const [deleted] = await db.$transaction([
       db.session.deleteMany({ where: { userId: target.id } }),
@@ -337,11 +347,25 @@ export class AdminController {
   }
 
   /**
-   * User Management - Send the standard password reset email on behalf of the user
+   * User Management - Send the standard password reset email on behalf of the user.
+   * A regular admin can never trigger a reset for a SUPER_ADMIN, nor for a suspended account.
    */
   public static async sendPasswordReset(req: Request, res: Response) {
+    const actor = (req as any).user;
+
     const target = await db.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    if (target.role === 'SUPER_ADMIN' && actor.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'FORBIDDEN_TARGET_SUPER_ADMIN',
+        message: 'Doar un SUPER_ADMIN poate trimite resetarea parolei unui cont SUPER_ADMIN.',
+      });
+    }
+
+    if (target.isSuspended) {
+      return res.status(409).json({ error: 'USER_SUSPENDED', message: 'Contul este suspendat.' });
+    }
 
     await AuthService.requestPasswordReset({
       email: target.email,
