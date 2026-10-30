@@ -2101,6 +2101,62 @@ try {
     assert.equal(billingModule.isValidRoCui(computedCui), true, `M: isValidRoCui(${computedCui}) respinge un CUI valid`);
     const brokenCui = `${computedCui.slice(0, -1)}${(Number(computedCui.slice(-1)) + 1) % 10}`;
     assert.equal(billingModule.isValidRoCui(brokenCui), false, `M: isValidRoCui(${brokenCui}) acceptă altă cifră de control`);
+
+    // --- 9. Portul 465 e mereu TLS, chiar cu SMTP_SECURE=false --------------
+    // Nimic nu ascultă pe 465 aici, deci verificarea nu are nevoie de rețea reală: un client în clar
+    // care așteaptă salutul pe un port implicit-TLS raportează exact "Greeting never received".
+    try {
+      // Doar portul, ca la o salvare din admin: secure trebuie recalculat
+      const portOnly = await fgoApi('PUT', '/api/admin/settings', {
+        token: state.tokens.super,
+        body: { values: { SMTP_PORT: '465' } },
+      });
+      expectStatus(portOnly, 200, 'M PUT SMTP_PORT 465');
+
+      const onImplicitTls = await fgoApi('GET', '/api/admin/smtp', { token: state.tokens.admin });
+      expectStatus(onImplicitTls, 200, 'M GET /api/admin/smtp pe portul 465');
+      assert.equal(
+        onImplicitTls.json?.config?.port,
+        465,
+        `M: portul SMTP nu a devenit 465 (${onImplicitTls.json?.config?.port})`
+      );
+      assert.equal(
+        onImplicitTls.json?.config?.secure,
+        true,
+        'M: secure nu a fost recalculat după ce portul a fost schimbat în 465'
+      );
+
+      // "false" salvat (ca în .env) nu are voie să dezactiveze TLS pe 465
+      const secureFalse = await fgoApi('PUT', '/api/admin/settings', {
+        token: state.tokens.super,
+        body: { values: { SMTP_SECURE: 'false' } },
+      });
+      expectStatus(secureFalse, 200, 'M PUT SMTP_SECURE false');
+
+      const afterFalse = await fgoApi('GET', '/api/admin/smtp', { token: state.tokens.admin });
+      expectStatus(afterFalse, 200, 'M GET /api/admin/smtp după SMTP_SECURE false');
+      assert.equal(afterFalse.json?.config?.secure, true, 'M: SMTP_SECURE=false a dezactivat TLS pe portul 465');
+
+      const smtpTest = await fgoApi('POST', '/api/admin/settings/test/smtp', { token: state.tokens.super });
+      expectStatus(smtpTest, 200, 'M POST test/smtp pe portul 465');
+      assert.ok(
+        !String(smtpTest.json?.message || '').toLowerCase().includes('greeting never received'),
+        `M: testul SMTP pe 465 raportează "Greeting never received" (${smtpTest.json?.message})`
+      );
+    } finally {
+      // Valoarea salvată aici nu are voie să rămână: următorul start al aplicației ar aplica-o
+      try {
+        const cleared = await fgoApi('PUT', '/api/admin/settings', {
+          token: state.tokens.super,
+          body: { values: { SMTP_PORT: null, SMTP_SECURE: null } },
+        });
+        if (cleared.status !== 200) {
+          console.warn(`! M: setările SMTP nu au putut fi scoase (status ${cleared.status}): ${cleared.text.slice(0, 200)}`);
+        }
+      } catch (err) {
+        console.warn(`! M: cleanup setări SMTP: ${err.message}`);
+      }
+    }
   });
 } finally {
   // The case M server process and its mocks first, then the settings (through the API, so the

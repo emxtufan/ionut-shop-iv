@@ -33,6 +33,10 @@ function getTransporter(): Transporter {
       port: config.smtp.port,
       secure: config.smtp.secure,
       auth: { user: config.smtp.user, pass: config.smtp.pass },
+      // A wrong port/secure combination must fail in seconds, never hang the request
+      connectionTimeout: 15_000,
+      greetingTimeout: 15_000,
+      socketTimeout: 30_000,
     });
     transporterSignature = signature;
   }

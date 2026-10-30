@@ -96,6 +96,18 @@ function trueFalse(value: string): string | null {
   return null;
 }
 
+/**
+ * Last effective SMTP_SECURE value (environment, admin override or default), kept so the flag can be
+ * recomputed when only SMTP_PORT is saved. Empty means "no value at all".
+ */
+let smtpSecureValue = '';
+
+/** Port 465 speaks implicit TLS, so it wins over any stored or environment "false". */
+function applySmtpSecure(value: string): void {
+  smtpSecureValue = String(value ?? '').trim();
+  config.smtp.secure = smtpSecureValue.toLowerCase() === 'true' || config.smtp.port === 465;
+}
+
 export const SETTING_DEFS: SettingDef[] = [
   // --- Site ------------------------------------------------------------------
   {
@@ -241,6 +253,8 @@ export const SETTING_DEFS: SettingDef[] = [
     read: () => String(config.smtp.port),
     apply: value => {
       config.smtp.port = value ? Number(value) : 587;
+      // 465 is always implicit TLS: a port saved from the admin panel recomputes the flag
+      applySmtpSecure(smtpSecureValue);
     },
     validate: intInRange(1, 65535, 'Trebuie să fie un număr întreg între 1 și 65535.'),
   },
@@ -249,9 +263,7 @@ export const SETTING_DEFS: SettingDef[] = [
     secret: false,
     group: 'email',
     read: () => String(config.smtp.secure),
-    apply: value => {
-      config.smtp.secure = value ? value.toLowerCase() === 'true' : config.smtp.port === 465;
-    },
+    apply: value => applySmtpSecure(value),
     validate: value => {
       if (!value) return null;
       if (value.toLowerCase() !== 'true' && value.toLowerCase() !== 'false') return 'Valoarea trebuie să fie true sau false.';
