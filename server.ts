@@ -13,6 +13,7 @@ import { authenticate, optionalAuthenticate, requireRole } from './src/server/mi
 import { createRateLimiter } from './src/server/modules/security/rate-limiter.ts';
 
 import { AuthController } from './src/server/modules/auth/auth.controller.ts';
+import { AuthService } from './src/server/modules/auth/auth.service.ts';
 import { VideosController } from './src/server/modules/videos/videos.controller.ts';
 import { PlaybackController } from './src/server/modules/playback/playback.controller.ts';
 import { PaymentsService } from './src/server/modules/payments/payments.service.ts';
@@ -119,6 +120,38 @@ app.get('/api/account/invoices/:id/print', authenticate, ah(async (req: Request,
   const html = EmailService.renderInvoiceHtml(invoice, invoice.purchase.video.title);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   return res.send(html.replace('</body>', '<script src="/print.js" defer></script></body>'));
+}));
+
+// -----------------------------------------------------------------------------
+// GDPR: own data export & account erasure
+// -----------------------------------------------------------------------------
+app.get('/api/account/export', authenticate, ah(async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const exportData = await AuthService.exportAccountData(user.id);
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="date-cont.json"');
+  return res.send(JSON.stringify(exportData, null, 2));
+}));
+
+app.delete('/api/account', authenticate, authLimiter, ah(async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+  try {
+    await AuthService.deleteAccount({ userId: user.id, password });
+  } catch (err: any) {
+    if (err.message === 'INVALID_PASSWORD') {
+      return res.status(400).json({ error: 'INVALID_PASSWORD', message: 'Parolă incorectă.' });
+    }
+    if (err.message === 'ADMIN_ACCOUNT_DELETE_FORBIDDEN') {
+      return res.status(403).json({ message: 'Conturile de administrator nu pot fi șterse de aici.' });
+    }
+    throw err;
+  }
+
+  res.clearCookie('cinevault_session');
+  return res.json({ success: true, message: 'Contul a fost șters definitiv.' });
 }));
 
 // -----------------------------------------------------------------------------

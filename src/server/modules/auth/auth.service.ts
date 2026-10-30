@@ -385,4 +385,151 @@ export class AuthService {
       metadata: { email: user.email, sessionsInvalidated: true },
     });
   }
+
+  /**
+   * GDPR export: everything the platform holds about the account, with secrets removed.
+   * The password hash, the reset token hash and the email bodies are never included.
+   */
+  public static async exportAccountData(userId: string) {
+    const user = await db.user.findUnique({ where: { id: userId } });
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    const { passwordHash, passwordResetTokenHash, passwordResetExpiresAt, ...profile } = user;
+
+    const [purchases, payments, invoices, entitlements, sessions, playbackSessions, auditLogs, emails] =
+      await Promise.all([
+        db.purchase.findMany({
+          where: { userId },
+          include: { video: { select: { id: true, title: true, slug: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        db.payment.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } }),
+        db.invoice.findMany({
+          where: { userId },
+          include: { purchase: { include: { video: { select: { title: true } } } } },
+          orderBy: { issuedAt: 'desc' },
+        }),
+        db.entitlement.findMany({
+          where: { userId },
+          include: { video: { select: { id: true, title: true, slug: true } } },
+          orderBy: { grantedAt: 'desc' },
+        }),
+        db.session.findMany({
+          where: { userId },
+          select: {
+            id: true,
+            ip: true,
+            userAgent: true,
+            deviceType: true,
+            createdAt: true,
+            lastActiveAt: true,
+            expiresAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        db.playbackSession.findMany({
+          where: { userId },
+          select: {
+            id: true,
+            videoId: true,
+            video: { select: { title: true } },
+            ip: true,
+            userAgent: true,
+            startedAt: true,
+            lastHeartbeatAt: true,
+            endedAt: true,
+            status: true,
+          },
+          orderBy: { startedAt: 'desc' },
+        }),
+        db.auditLog.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } }),
+        // Emails have no FK to the account: they are matched by the recipient address
+        db.emailLog.findMany({
+          where: { to: user.email },
+          select: { to: true, subject: true, type: true, status: true, sentAt: true },
+          orderBy: { sentAt: 'desc' },
+        }),
+      ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile,
+      purchases,
+      payments,
+      invoices,
+      entitlements,
+      sessions,
+      playbackSessions,
+      auditLogs,
+      emails,
+    };
+  }
+
+  /**
+   * GDPR erasure. Accounting records (Payment/Purchase/Invoice) are kept by law, everything
+   * identifiable is removed or anonymized and the account can no longer be logged into.
+   */
+  public static async deleteAccount(params: { userId: string; password: string }): Promise<void> {
+    const user = await db.user.findUnique({ where: { id: params.userId } });
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    if (!verifyPassword(params.password, user.passwordHash)) {
+      throw new Error('INVALID_PASSWORD');
+    }
+
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+      throw new Error('ADMIN_ACCOUNT_DELETE_FORBIDDEN');
+    }
+
+    await db.$transaction(async tx => {
+      // Playback in progress ends now (the Session cascade below then removes the rows)
+      await tx.playbackSession.updateMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+        data: { status: 'ENDED', endedAt: new Date() },
+      });
+      await tx.session.deleteMany({ where: { userId: user.id } });
+
+      await tx.entitlement.updateMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+        data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'ACCOUNT_DELETED' },
+      });
+
+      // Emails have no FK to the account: they are matched by the recipient address
+      await tx.emailLog.deleteMany({ where: { to: user.email } });
+
+      await tx.auditLog.updateMany({
+        where: { userId: user.id },
+        data: { ip: 'anonimizat', userAgent: 'anonimizat', device: null, metadata: Prisma.DbNull },
+      });
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          email: `deleted-${user.id}@deleted.invalid`,
+          username: `deleted-${user.id}`,
+          passwordHash: hashPassword(crypto.randomBytes(32).toString('hex')),
+          isSuspended: true,
+          suspendedReason: 'ACCOUNT_DELETED',
+          failedLoginAttempts: 0,
+          lockoutUntil: null,
+          passwordResetTokenHash: null,
+          passwordResetExpiresAt: null,
+          lastLoginAt: null,
+          lastLoginIp: null,
+        },
+      });
+
+      // Written already anonymized, so the erasure record itself carries no personal data
+      await tx.auditLog.create({
+        data: {
+          eventType: 'ACCOUNT_DELETED',
+          severity: 'CRITICAL',
+          userId: user.id,
+          ip: 'anonimizat',
+          userAgent: 'anonimizat',
+          metadata: { reason: 'USER_REQUEST' },
+        },
+      });
+    });
+  }
 }
