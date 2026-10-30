@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ConfigProvider, notification } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { brandTheme } from './client/theme.ts';
@@ -14,6 +14,11 @@ import { CheckoutModal } from './client/components/CheckoutModal.tsx';
 import { AuthModal } from './client/components/AuthModal.tsx';
 import { ResetPasswordModal } from './client/components/ResetPasswordModal.tsx';
 import { Video } from './types/index.ts';
+
+// Stripe can still report the session as unpaid right after the redirect, so the
+// verification is retried once before we tell the customer it is still pending.
+const STRIPE_VERIFY_MAX_ATTEMPTS = 2;
+const STRIPE_VERIFY_RETRY_MS = 2000;
 
 // ?page=terms|privacy|cookies renders a legal page instead of the main content
 function readLegalPage(): LegalPageKey | null {
@@ -65,11 +70,20 @@ function SiteFooter() {
 }
 
 function AppContent() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('catalog');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isAdminMode, setIsAdminMode] = useState<boolean>(false);
   const [legalPage, setLegalPage] = useState<LegalPageKey | null>(() => readLegalPage());
+
+  // Bumped whenever a payment is confirmed, so every page that renders isPurchased refetches
+  const [purchasesVersion, setPurchasesVersion] = useState<number>(0);
+  // The Stripe return redirect must be handled exactly once per mount (StrictMode runs effects twice)
+  const stripeRedirectHandledRef = useRef<boolean>(false);
+  // Captured before any effect cleans the address bar, so ?resetToken= cannot swallow it
+  const stripeReturnParamsRef = useRef<URLSearchParams>(
+    new URLSearchParams(window.location.search)
+  );
 
   // Modals
   const [activeWatchVideo, setActiveWatchVideo] = useState<Video | null>(null);
@@ -91,60 +105,88 @@ function AppContent() {
 
   // Check for Stripe Checkout return redirect (?stripe_payment=success&session_id=...)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    // Wait for /api/auth/me: the verify call is authenticated by the session cookie, and the
+    // purchase lists it refreshes belong to that user.
+    if (isAuthLoading) return;
+    if (stripeRedirectHandledRef.current) return;
+
+    const params = stripeReturnParamsRef.current;
     const stripePayment = params.get('stripe_payment');
     const sessionId = params.get('session_id');
     const videoId = params.get('video_id');
 
-    if (stripePayment === 'success' && sessionId) {
-      // Clean query params from address bar
-      window.history.replaceState({}, '', window.location.pathname);
+    if (!stripePayment) return;
 
-      fetch('/api/payments/verify-stripe-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            notification.success({
-              message: 'Plată Stripe confirmată!',
-              description: 'Accesul a fost activat permanent în contul tău.',
-              placement: 'bottomRight',
-            });
-            // Fetch video to launch player
-            if (videoId) {
-              fetch(`/api/videos/${videoId}`)
-                .then((vr) => vr.json())
-                .then((vd) => {
-                  if (vd.id) setActiveWatchVideo(vd);
-                })
-                .catch(() => {});
-            }
-          } else {
-            notification.warning({
-              message: 'Verificare plată',
-              description: data.message || 'Tranzacția este în curs de confirmare.',
-              placement: 'bottomRight',
-            });
-          }
-        })
-        .catch(() => {
-          notification.error({
-            message: 'Eroare',
-            description: 'Nu s-a putut verifica sesiunea de plată.',
-          });
-        });
-    } else if (stripePayment === 'cancelled') {
-      window.history.replaceState({}, '', window.location.pathname);
+    stripeRedirectHandledRef.current = true;
+    // Clean query params from address bar
+    window.history.replaceState({}, '', window.location.pathname);
+
+    if (stripePayment === 'cancelled') {
       notification.info({
         message: 'Plată anulată',
         description: 'Sesiunea Stripe Checkout a fost anulată.',
         placement: 'bottomRight',
       });
+      return;
     }
-  }, []);
+
+    if (stripePayment !== 'success' || !sessionId) return;
+
+    const verifySession = async (attempt: number) => {
+      try {
+        const res = await fetch('/api/payments/verify-stripe-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        // Any successful verification (fresh fulfilment or ALREADY_FULFILLED) means the
+        // entitlement now exists, so the lists still showing "Unlock" must be reloaded.
+        if (data.success) {
+          setPurchasesVersion((version) => version + 1);
+          notification.success({
+            message: 'Plată Stripe confirmată!',
+            description: 'Accesul a fost activat permanent în contul tău.',
+            placement: 'bottomRight',
+          });
+          // Fetch video to launch player
+          if (videoId) {
+            fetch(`/api/videos/${videoId}`)
+              .then((vr) => vr.json())
+              .then((vd) => {
+                if (vd.id) setActiveWatchVideo(vd);
+              })
+              .catch(() => {});
+          }
+          return;
+        }
+
+        // The server answers 200 { success: false } while Stripe has not marked the session
+        // as paid yet: one short retry is enough before reporting it as pending.
+        if (res.ok && attempt < STRIPE_VERIFY_MAX_ATTEMPTS) {
+          window.setTimeout(() => {
+            void verifySession(attempt + 1);
+          }, STRIPE_VERIFY_RETRY_MS);
+          return;
+        }
+
+        notification.warning({
+          message: 'Verificare plată',
+          description: data.message || 'Tranzacția este în curs de confirmare.',
+          placement: 'bottomRight',
+        });
+      } catch (e) {
+        console.error(e);
+        notification.error({
+          message: 'Eroare',
+          description: 'Nu s-a putut verifica sesiunea de plată.',
+        });
+      }
+    };
+
+    void verifySession(1);
+  }, [isAuthLoading]);
 
   const handleWatch = (video: Video) => {
     if (!user) {
@@ -206,6 +248,7 @@ function AppContent() {
             {currentTab === 'catalog' && (
               <CatalogPage
                 searchQuery={searchQuery}
+                purchasesVersion={purchasesVersion}
                 onWatch={handleWatch}
                 onUnlock={handleUnlock}
               />
@@ -213,12 +256,15 @@ function AppContent() {
 
             {currentTab === 'library' && (
               <LibraryPage
+                purchasesVersion={purchasesVersion}
                 onWatch={handleWatch}
                 onExploreCatalog={() => setCurrentTab('catalog')}
               />
             )}
 
-            {currentTab === 'purchases' && <PurchasesPage />}
+            {currentTab === 'purchases' && (
+              <PurchasesPage purchasesVersion={purchasesVersion} />
+            )}
           </>
         )}
       </main>

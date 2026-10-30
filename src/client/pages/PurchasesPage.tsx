@@ -5,7 +5,12 @@ import { Purchase } from '../../types/index.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { ChangePasswordForm } from '../components/ChangePasswordForm.tsx';
 
-export const PurchasesPage: React.FC = () => {
+interface PurchasesPageProps {
+  // Changes whenever a payment is confirmed: forces the purchase history to reload
+  purchasesVersion: number;
+}
+
+export const PurchasesPage: React.FC<PurchasesPageProps> = ({ purchasesVersion }) => {
   const { user, logout } = useAuth();
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -24,7 +29,7 @@ export const PurchasesPage: React.FC = () => {
       .then((data) => setPurchases(data.purchases || []))
       .catch((e) => console.error(e))
       .finally(() => setIsLoading(false));
-  }, [user]);
+  }, [user, purchasesVersion]);
 
   const confirmDeleteAccount = async () => {
     setDeleteError(null);
