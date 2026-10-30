@@ -123,28 +123,72 @@ export const PurchasesPage: React.FC = () => {
     {
       title: 'Acțiuni',
       key: 'actions',
-      render: (_: any, r: any) => r.invoice && (
-        <div className="flex items-center gap-2">
-          <Button
-            type="text"
-            size="small"
-            icon={<FileTextOutlined />}
-            onClick={() => setSelectedReceipt(r)}
-            className="text-xs text-ink/80 hover:text-ink"
-          >
-            Vezi Factură
-          </Button>
-          <Button
-            type="text"
-            size="small"
-            icon={<PrinterOutlined />}
-            onClick={() => window.open(`/api/account/invoices/${r.invoice.id}/print`, '_blank')}
-            className="text-xs text-muted hover:text-ink-soft"
-          >
-            Print
-          </Button>
-        </div>
-      ),
+      render: (_: any, r: any) => {
+        const invoice = r.invoice;
+        if (!invoice) return null;
+
+        // A factura emisă de FGO are PDF-ul propriu: chitanța internă nu mai este necesară
+        if (invoice.fgoPdfUrl || invoice.fgoStornoPdfUrl || invoice.fgoStatus) {
+          return (
+            <div className="flex flex-col items-start gap-1">
+              {invoice.fgoPdfUrl && (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={invoice.fgoPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-ink/80 hover:text-ink px-0"
+                >
+                  Descarcă factura (PDF)
+                </Button>
+              )}
+              {invoice.fgoStornoPdfUrl && (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={invoice.fgoStornoPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-ink/80 hover:text-ink px-0"
+                >
+                  Descarcă factura storno
+                </Button>
+              )}
+              {invoice.fgoStatus && !invoice.fgoPdfUrl && (
+                <span className="text-[11px] text-muted">
+                  Factura se generează. O vei primi pe email.
+                </span>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div className="flex items-center gap-2">
+            <Button
+              type="text"
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => setSelectedReceipt(r)}
+              className="text-xs text-ink/80 hover:text-ink"
+            >
+              Vezi Factură
+            </Button>
+            <Button
+              type="text"
+              size="small"
+              icon={<PrinterOutlined />}
+              onClick={() => window.open(`/api/account/invoices/${invoice.id}/print`, '_blank')}
+              className="text-xs text-muted hover:text-ink-soft"
+            >
+              Print
+            </Button>
+          </div>
+        );
+      },
     },
   ];
 
