@@ -187,7 +187,26 @@ export const AdminSettingsTab: React.FC = () => {
     setInitial(next);
   };
 
-  const loadSettings = async () => {
+  // After a save only the fields that were just written are refreshed: whatever was typed
+  // and not saved in the other cards stays put, and the saved secrets are wiped from state
+  const applySettingsPartially = (list: SettingView[], touched: string[]) => {
+    const fresh: Record<string, string> = {};
+    for (const item of list) {
+      fresh[item.key] = item.secret ? '' : toInputValue(item.key, item.value ?? '');
+    }
+    const patch = (prev: Record<string, string>) => {
+      const next = { ...prev };
+      for (const key of touched) {
+        if (key in fresh) next[key] = fresh[key];
+      }
+      return next;
+    };
+    setSettings(list);
+    setValues(patch);
+    setInitial(patch);
+  };
+
+  const loadSettings = async (touched?: string[]) => {
     try {
       const res = await fetch('/api/admin/settings');
       const data = await res.json().catch(() => ({}));
@@ -195,7 +214,8 @@ export const AdminSettingsTab: React.FC = () => {
         message.error(data.message || 'Eroare la încărcarea setărilor.');
         return;
       }
-      applySettings(data.settings || []);
+      if (touched) applySettingsPartially(data.settings || [], touched);
+      else applySettings(data.settings || []);
       setInfrastructure(data.infrastructure || null);
     } catch {
       message.error('Eroare de conexiune la încărcarea setărilor.');
@@ -280,8 +300,9 @@ export const AdminSettingsTab: React.FC = () => {
       }
 
       message.success('Setările au fost salvate.');
-      if (data.settings) applySettings(data.settings);
-      else await loadSettings();
+      const touched = Object.keys(payload);
+      if (data.settings) applySettingsPartially(data.settings, touched);
+      else await loadSettings(touched);
       await runAllTests();
     } catch {
       message.error('Eroare de conexiune la salvarea setărilor.');
@@ -303,8 +324,8 @@ export const AdminSettingsTab: React.FC = () => {
         return;
       }
       message.success('Setarea folosește din nou valoarea din .env.');
-      if (data.settings) applySettings(data.settings);
-      else await loadSettings();
+      if (data.settings) applySettingsPartially(data.settings, [key]);
+      else await loadSettings([key]);
       await runAllTests();
     } catch {
       message.error('Eroare de conexiune.');
