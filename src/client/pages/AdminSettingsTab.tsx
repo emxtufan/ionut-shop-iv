@@ -458,7 +458,7 @@ export const AdminSettingsTab: React.FC = () => {
         ) : field.type === 'password' ? (
           <Input.Password
             value={value}
-            placeholder={setting.preview || 'Necompletat'}
+            placeholder={setting.isSet && setting.preview ? setting.preview : 'Necompletat'}
             autoComplete="new-password"
             status={error ? 'error' : undefined}
             onChange={(e) => setFieldValue(field.key, e.target.value)}

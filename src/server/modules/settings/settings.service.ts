@@ -440,16 +440,6 @@ export class SettingsService {
     return SETTING_DEFS.map(def => {
       const row = byKey.get(def.key);
 
-      let preview: string | null = null;
-      if (def.secret && row) {
-        try {
-          const plain = decrypt(row.value);
-          if (plain.length >= 12) preview = `••••${plain.slice(-4)}`;
-        } catch {
-          preview = null;
-        }
-      }
-
       const fallback = fallbackValue(def.key);
       const source: SettingView['source'] = row
         ? 'admin'
@@ -459,12 +449,31 @@ export class SettingsService {
             ? 'default'
             : 'none';
 
+      // A secret can come from the environment just as well as from an admin override,
+      // so its state is read from the effective value (admin, else env), never from the row alone.
+      let secretValue: string | null = null;
+      if (def.secret) {
+        if (row) {
+          try {
+            secretValue = decrypt(row.value);
+          } catch {
+            secretValue = null;
+          }
+        }
+        if (secretValue === null) secretValue = envValue(def.key) || null;
+      }
+
+      let preview: string | null = null;
+      if (secretValue) {
+        preview = secretValue.length >= 12 ? `••••${secretValue.slice(-4)}` : '••••';
+      }
+
       return {
         key: def.key,
         group: def.group,
         secret: def.secret,
         value: def.secret ? null : row ? row.value : fallback,
-        isSet: Boolean(row) || source === 'default',
+        isSet: def.secret ? Boolean(secretValue) : Boolean(row) || source === 'default',
         preview,
         source,
       };
