@@ -21,6 +21,7 @@ import { EmailService } from './src/server/modules/email/email.service.ts';
 import { AdminController, THUMBNAILS_DIR } from './src/server/modules/admin/admin.controller.ts';
 import { SettingsService } from './src/server/modules/settings/settings.service.ts';
 import { SettingsController } from './src/server/modules/settings/settings.controller.ts';
+import { FgoService } from './src/server/modules/fgo/fgo.service.ts';
 import { db, ensureAdminUser } from './src/server/db/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -262,6 +263,7 @@ app.put('/api/admin/settings', ...superAdmin, ah(SettingsController.updateSettin
 app.post('/api/admin/settings/test/bunny', ...superAdmin, ah(SettingsController.testBunny));
 app.post('/api/admin/settings/test/stripe', ...superAdmin, ah(SettingsController.testStripe));
 app.post('/api/admin/settings/test/smtp', ...superAdmin, ah(SettingsController.testSmtp));
+app.post('/api/admin/settings/test/fgo', ...superAdmin, ah(SettingsController.testFgo));
 app.post('/api/admin/settings/stripe-webhook', ...superAdmin, ah(SettingsController.createStripeWebhook));
 
 // -----------------------------------------------------------------------------
@@ -311,6 +313,9 @@ async function bootstrapServer() {
     console.log(`[IV Concept VOD] ${config.isProduction ? 'Production' : 'Development'} server on http://0.0.0.0:${config.port}`);
     console.log(`[IV Concept VOD] Uploads stored in ${config.uploadDir}`);
   });
+
+  // The FGO invoice queue is drained once a minute; unref so the timer never keeps the process alive
+  setInterval(FgoService.kick, 60_000).unref();
 }
 
 bootstrapServer().catch(err => {

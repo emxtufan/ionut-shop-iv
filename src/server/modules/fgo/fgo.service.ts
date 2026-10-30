@@ -104,13 +104,13 @@ function totalAmount(invoice: Invoice): number {
   return Number(invoice.totalAmount.toFixed(2));
 }
 
-/** Product name for the single FGO line, taken from the invoice items. */
+/** Product name for the single FGO line, from the invoice items (FGO accepts at most 2000 characters). */
 function itemName(invoice: Invoice): string {
   const items = Array.isArray(invoice.items) ? invoice.items : [];
   const names = items
     .map(item => (item && typeof item === 'object' ? String((item as any).description ?? '').trim() : ''))
     .filter(Boolean);
-  return names.length ? names.join(', ') : 'Licență digitală streaming video';
+  return (names.length ? names.join(', ') : 'Licență digitală streaming video').slice(0, 2000);
 }
 
 function apiHostname(): string {
@@ -479,9 +479,12 @@ export class FgoService {
     // 6. Storno (at the admin's request) -----------------------------------------
     if (invoice.fgoStornoWanted) {
       if (!invoice.fgoStornoDoneAt) {
-        // The storno keeps the original number unless it uses the same series
-        const sameSeries = Boolean(config.fgo.stornoSeries) && config.fgo.stornoSeries === invoice.fgoSerie;
-        const stornoNumar = sameSeries && isDigits(config.fgo.lastNumber) ? nextNumber(config.fgo.lastNumber) : null;
+        // numar_storno only belongs to the counter series, and only when the counter is known
+        const sameSeries = Boolean(config.fgo.stornoSeries) && config.fgo.stornoSeries === config.fgo.series;
+        const stornoNumar =
+          sameSeries && config.fgo.lastNumber && isDigits(config.fgo.lastNumber)
+            ? nextNumber(config.fgo.lastNumber)
+            : null;
 
         const stornoBody = withoutEmpty({
           serie_storno: config.fgo.stornoSeries || null,
@@ -502,8 +505,8 @@ export class FgoService {
         }
 
         if (storno) {
-          const stornoSerie = String(storno.serie_storno ?? storno.serie ?? '');
-          const stornoSavedNumar = String(storno.numar_storno ?? storno.numar ?? '');
+          const stornoSerie = String(storno.serie ?? '');
+          const stornoSavedNumar = String(storno.numar ?? '');
           const stornoDoneAt = new Date();
 
           const moved = await db.$transaction(async tx => {

@@ -11,6 +11,7 @@ import Stripe from 'stripe';
 import { config } from '../../config.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
+import { FgoService } from '../fgo/fgo.service.ts';
 import { PaymentsService } from '../payments/payments.service.ts';
 import { SettingsService } from './settings.service.ts';
 
@@ -183,6 +184,25 @@ export class SettingsController {
       return res.json(await EmailService.verifySmtp());
     } catch (err: any) {
       return res.json({ ok: false, message: `Emailul nu a putut fi verificat: ${safeErrorMessage(err)}` });
+    }
+  }
+
+  /**
+   * Reads the FGO identity (company + rights of the API key) with the stored key and cod unic
+   */
+  public static async testFgo(req: Request, res: Response) {
+    const { apiKey, codUnic } = config.fgo;
+    if (!apiKey || !codUnic) {
+      return res.json({
+        ok: false,
+        message: 'FGO nu este configurat: completează cheia API și codul unic al firmei.',
+      });
+    }
+
+    try {
+      return res.json(await FgoService.testConnection());
+    } catch (err: any) {
+      return res.json({ ok: false, message: `FGO nu a putut fi verificat: ${safeErrorMessage(err)}` });
     }
   }
 

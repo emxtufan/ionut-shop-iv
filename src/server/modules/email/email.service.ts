@@ -302,6 +302,69 @@ export class EmailService {
   }
 
   /**
+   * 5. FGO Fiscal Invoice / Storno Email (the PDF issued by FGO is attached when it could be downloaded)
+   */
+  public static async sendFgoInvoiceEmail(invoice: Invoice, pdf: Buffer | null, isStorno: boolean): Promise<boolean> {
+    try {
+      // The storno email carries the storno document, the invoice email carries the invoice
+      const serie = (isStorno ? invoice.fgoStornoSerie : invoice.fgoSerie) || '';
+      const numar = (isStorno ? invoice.fgoStornoNumar : invoice.fgoNumar) || '';
+      const pdfUrl = (isStorno ? invoice.fgoStornoPdfUrl : invoice.fgoPdfUrl) || '';
+      const documentNumber = [serie, numar].filter(Boolean).join('-') || invoice.invoiceNumber || '';
+
+      const template = generateFgoInvoiceEmail({
+        isStorno,
+        invoiceNumber: documentNumber,
+        buyerName: invoice.buyerName,
+        total: invoice.totalAmount.toNumber(),
+        currency: invoice.currency,
+        issuedAt: formatDateRo(invoice.issuedAt),
+        pdfUrl,
+        appUrl: config.appUrl,
+      });
+
+      // The attachments reach the recipient only: EmailLog keeps the body, never the PDF bytes
+      const attachments = pdf
+        ? [{ filename: pdfFileName(serie, numar), content: pdf, contentType: 'application/pdf' }]
+        : [];
+
+      const log = await this.sendEmail({
+        to: invoice.buyerEmail,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        type: isStorno ? 'FGO_STORNO' : 'FGO_INVOICE',
+        attachments,
+        metadata: {
+          invoiceId: invoice.id,
+          invoiceNumber: documentNumber,
+          userId: invoice.userId,
+          isStorno,
+          pdfAttached: Boolean(pdf),
+        },
+      });
+
+      AuditService.logEvent({
+        eventType: 'EMAIL_SENT',
+        userId: invoice.userId,
+        purchaseId: invoice.purchaseId,
+        ip: 'system',
+        userAgent: 'FGO Invoice Service',
+        metadata: {
+          emailType: isStorno ? 'FGO_STORNO' : 'FGO_INVOICE',
+          invoiceNumber: documentNumber,
+          status: log.status,
+        },
+      });
+
+      return log.status === 'SENT';
+    } catch (err: any) {
+      console.error(`[EmailService] FGO invoice email for ${invoice?.id} failed:`, err?.message);
+      return false;
+    }
+  }
+
+  /**
    * Sends a diagnostic email from the Admin Panel to verify SMTP delivery
    */
   public static async sendTestEmail(recipientEmail: string, adminUsername: string): Promise<EmailLog> {

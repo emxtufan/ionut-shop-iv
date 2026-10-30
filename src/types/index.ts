@@ -106,7 +106,14 @@ export interface Invoice {
   issuedAt: string;
 }
 
-export type EmailType = 'WELCOME' | 'PURCHASE_CONFIRMATION' | 'STRIPE_INVOICE' | 'PASSWORD_RESET' | 'TEST';
+export type EmailType =
+  | 'WELCOME'
+  | 'PURCHASE_CONFIRMATION'
+  | 'STRIPE_INVOICE'
+  | 'PASSWORD_RESET'
+  | 'FGO_INVOICE'
+  | 'FGO_STORNO'
+  | 'TEST';
 
 export interface EmailLog {
   id: string;
