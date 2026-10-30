@@ -138,7 +138,7 @@ export const AdminInvoicesTab: React.FC = () => {
       key: 'invoiceNumber',
       width: 130,
       render: (value: string | null) => (
-        <span className="text-xs font-mono text-ink">{value || '—'}</span>
+        <span className="text-xs font-mono text-ink whitespace-nowrap">{value || '—'}</span>
       ),
     },
     {
@@ -183,11 +183,15 @@ export const AdminInvoicesTab: React.FC = () => {
       title: 'Email trimis',
       key: 'invoiceEmailedAt',
       width: 120,
-      render: (_: any, record: InvoiceRow) => (
-        <Tag color={record.invoiceEmailedAt ? 'green' : 'default'}>
-          {record.invoiceEmailedAt ? 'Trimis' : 'Netrimis'}
-        </Tag>
-      ),
+      render: (_: any, record: InvoiceRow) => {
+        // Local (non-FGO) invoices never track email delivery
+        if (!record.fgoStatus) return <span className="text-xs text-muted">—</span>;
+        return (
+          <Tag color={record.invoiceEmailedAt ? 'green' : 'default'}>
+            {record.invoiceEmailedAt ? 'Trimis' : 'Netrimis'}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Storno',
