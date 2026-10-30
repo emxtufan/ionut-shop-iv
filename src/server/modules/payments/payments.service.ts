@@ -8,7 +8,9 @@ import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
+import { FgoService } from '../fgo/fgo.service.ts';
 import { toPublicUser } from '../auth/auth.service.ts';
+import type { BillingDetails } from '../../../types/billing.ts';
 
 // Stripe client is built lazily and cached per secret key, so a key saved from the
 // admin panel takes effect without a restart.
@@ -26,6 +28,28 @@ function getStripe(): Stripe {
 function idOf(ref: string | { id: string } | null | undefined): string | null {
   if (!ref) return null;
   return typeof ref === 'string' ? ref : ref.id;
+}
+
+/** Billing details are validated before being saved; anything malformed is ignored here. */
+function readBilling(value: Prisma.JsonValue | null | undefined): BillingDetails | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as unknown as BillingDetails;
+}
+
+/** FGO enabled without its required settings: the payment goes through, the invoice waits in the queue. */
+function warnIfFgoIncomplete(): void {
+  if (!config.fgo.enabled) return;
+
+  const missing: string[] = [];
+  if (!config.fgo.apiKey) missing.push('cheia API');
+  if (!config.fgo.codUnic) missing.push('codul unic al firmei');
+  if (!config.fgo.series) missing.push('seria de facturare');
+  if (!missing.length) return;
+
+  // Never log the key itself, only what is missing
+  console.warn(
+    `[PaymentsService] FGO este activat, dar lipsește ${missing.join(', ')}. Factura fiscală rămâne PENDING și se reia automat după completarea setărilor.`
+  );
 }
 
 export class PaymentsService {
@@ -47,12 +71,16 @@ export class PaymentsService {
   public static async createCheckoutSession(params: {
     userId: string;
     videoId: string;
+    billing: BillingDetails;
     ip: string;
     userAgent: string;
     acceptedTerms: boolean;
   }): Promise<{ checkoutUrl: string }> {
     if (params.acceptedTerms !== true) throw new Error('TERMS_NOT_ACCEPTED');
     if (!config.stripe.secretKey) throw new Error('PAYMENTS_NOT_CONFIGURED');
+
+    // An incomplete FGO setup never blocks the payment: the invoice is issued later from the queue
+    warnIfFgoIncomplete();
 
     const user = await db.user.findUnique({ where: { id: params.userId } });
     if (!user) throw new Error('USER_NOT_FOUND');
@@ -83,6 +111,8 @@ export class PaymentsService {
             where: { paymentId: pendingPayment.id },
             data: { withdrawalWaiverAt: acceptedAt },
           });
+          // The buyer may have corrected the billing details in the meantime
+          await db.payment.update({ where: { id: pendingPayment.id }, data: { billing: params.billing } });
 
           AuditService.logEvent({
             eventType: 'PURCHASE_STARTED',
@@ -129,7 +159,8 @@ export class PaymentsService {
           },
         ],
         customer_email: user.email,
-        invoice_creation: { enabled: true },
+        // With FGO the fiscal invoice is issued there; Stripe only collects the money
+        invoice_creation: { enabled: !config.fgo.enabled },
         expires_at: (bucket + 1) * 60 + 1800,
         success_url: `${config.appUrl}/?session_id={CHECKOUT_SESSION_ID}&stripe_payment=success&video_id=${video.id}`,
         cancel_url: `${config.appUrl}/?stripe_payment=cancelled`,
@@ -152,6 +183,7 @@ export class PaymentsService {
       skipDuplicates: true,
     });
     const payment = await db.payment.findUniqueOrThrow({ where: { checkoutSessionId: session.id } });
+    await db.payment.update({ where: { id: payment.id }, data: { billing: params.billing } });
     await db.purchase.updateMany({ where: { paymentId: payment.id }, data: { withdrawalWaiverAt: acceptedAt } });
 
     AuditService.logEvent({
@@ -258,12 +290,25 @@ export class PaymentsService {
       const subtotal = Math.round((total / (1 + vatRate)) * 100) / 100;
       const taxAmount = Math.round((total - subtotal) * 100) / 100;
 
+      // Buyer details filled in at checkout; without them the account name is used
+      const billing = readBilling(payment.billing);
+
       const draft = await tx.invoice.create({
         data: {
           purchaseId: purchase.id,
           userId,
-          buyerName: user.username,
+          buyerName: billing?.name ?? user.username,
           buyerEmail: user.email,
+          buyerType: billing?.type ?? null,
+          buyerCui: billing?.cui ?? null,
+          buyerRegCom: billing?.regCom ?? null,
+          buyerCountry: billing?.country ?? null,
+          buyerCounty: billing?.county ?? null,
+          buyerCity: billing?.city ?? null,
+          buyerAddress: billing?.address ?? null,
+          buyerPhone: billing?.phone ?? null,
+          // PENDING = the fiscal invoice is issued by FGO from the queue, not here
+          fgoStatus: config.fgo.enabled ? 'PENDING' : null,
           sellerName: config.company.name,
           sellerCif: config.company.cif,
           sellerAddress: config.company.address,
@@ -298,9 +343,16 @@ export class PaymentsService {
     EmailService.sendPurchaseConfirmationEmail({ user: publicUser, video, purchase, invoice }).catch(err => {
       console.error('[PaymentsService] Error sending purchase confirmation email:', err);
     });
-    EmailService.sendInvoiceEmail({ user: publicUser, video, invoice }).catch(err => {
-      console.error('[PaymentsService] Error sending invoice email:', err);
-    });
+
+    if (invoice.fgoStatus === 'PENDING') {
+      // The fiscal invoice, with its own PDF, is emailed by the FGO flow: only wake the queue up
+      warnIfFgoIncomplete();
+      FgoService.kick();
+    } else {
+      EmailService.sendInvoiceEmail({ user: publicUser, video, invoice }).catch(err => {
+        console.error('[PaymentsService] Error sending invoice email:', err);
+      });
+    }
 
     AuditService.logEvent({
       eventType: 'PURCHASE_COMPLETED',
@@ -371,7 +423,9 @@ export class PaymentsService {
   }
 
   /**
-   * Marks a payment refunded / disputed and revokes the access it granted
+   * Marks a payment refunded / disputed and revokes the access it granted.
+   * A full refund of a fiscally invoiced purchase also asks FGO for its storno;
+   * a dispute only withdraws the access, exactly as before.
    */
   private static async revokePayment(
     paymentIntentId: string | null,
@@ -381,7 +435,7 @@ export class PaymentsService {
   ): Promise<{ status: string }> {
     if (!paymentIntentId) return { status: 'PAYMENT_NOT_FOUND' };
 
-    const purchase = await db.$transaction(async tx => {
+    const revoked = await db.$transaction(async tx => {
       const payment = await tx.payment.findUnique({ where: { paymentIntentId }, include: { purchase: true } });
       if (!payment) return null;
 
@@ -389,7 +443,20 @@ export class PaymentsService {
       if (!payment.purchase) return null;
 
       await tx.purchase.update({ where: { id: payment.purchase.id }, data: { status } });
-      await tx.invoice.updateMany({ where: { purchaseId: payment.purchase.id }, data: { status: 'REFUNDED' } });
+
+      // The storno is queued only for a fiscal invoice that FGO has issued, and only on a final refund
+      const invoice = await tx.invoice.findFirst({
+        where: { purchaseId: payment.purchase.id },
+        select: { fgoStatus: true },
+      });
+      const stornoWanted = status === 'REFUNDED' && Boolean(invoice?.fgoStatus);
+
+      await tx.invoice.updateMany({
+        where: { purchaseId: payment.purchase.id },
+        data: stornoWanted
+          ? { status: 'REFUNDED', fgoStornoWanted: true, fgoStatus: 'PENDING', fgoNextAttemptAt: null }
+          : { status: 'REFUNDED' },
+      });
 
       // Another paid, non-refunded purchase of the same user + video can carry the access forward
       const fallback = await tx.purchase.findFirst({
@@ -404,14 +471,14 @@ export class PaymentsService {
 
       // Only the entitlement granted by this very purchase is touched
       const entitlement = await tx.entitlement.findUnique({ where: { purchaseId: payment.purchase.id } });
-      if (!entitlement) return payment.purchase;
+      if (!entitlement) return { purchase: payment.purchase, stornoWanted };
 
       if (fallback) {
         await tx.entitlement.update({
           where: { id: entitlement.id },
           data: { purchaseId: fallback.id, status: 'ACTIVE', revokedAt: null, revokedReason: null },
         });
-        return payment.purchase;
+        return { purchase: payment.purchase, stornoWanted };
       }
 
       await tx.entitlement.update({
@@ -423,7 +490,7 @@ export class PaymentsService {
         where: { userId: payment.purchase.userId, videoId: payment.purchase.videoId, status: 'ACTIVE' },
         data: { status: 'ENDED', endedAt: new Date() },
       });
-      return payment.purchase;
+      return { purchase: payment.purchase, stornoWanted };
     });
 
     if (!purchase) return { status: 'PAYMENT_NOT_FOUND' };
