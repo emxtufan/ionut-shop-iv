@@ -15,6 +15,14 @@ export function toPublicUser({ passwordHash, ...user }: DbUser): PublicUser {
   return user;
 }
 
+/**
+ * Session tokens are persisted only as their sha256 hex digest, so a leaked Session row
+ * cannot be replayed as a cookie. The raw token exists solely in the browser.
+ */
+function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 export class AuthService {
   /**
    * Helper to parse simple user-agent device string
@@ -66,11 +74,13 @@ export class AuthService {
       throw new Error('PASSWORD_TOO_LONG');
     }
 
+    // Email and username duplicates answer with the same code, so registration cannot be
+    // used to find out whether an address or a username already has an account
     if (await db.user.findUnique({ where: { email } })) {
-      throw new Error('EMAIL_ALREADY_EXISTS');
+      throw new Error('ACCOUNT_UNAVAILABLE');
     }
     if (await db.user.findFirst({ where: { username: { equals: username, mode: 'insensitive' } } })) {
-      throw new Error('USERNAME_ALREADY_EXISTS');
+      throw new Error('ACCOUNT_UNAVAILABLE');
     }
 
     let newUser: DbUser;
@@ -87,7 +97,7 @@ export class AuthService {
     } catch (err) {
       // Lost a race with a concurrent registration for the same email/username
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        throw new Error('EMAIL_ALREADY_EXISTS');
+        throw new Error('ACCOUNT_UNAVAILABLE');
       }
       throw err;
     }
@@ -208,19 +218,24 @@ export class AuthService {
   }
 
   /**
-   * Creates a persisted session with an opaque random token
+   * Creates a persisted session with an opaque random token.
+   * Only the token hash is stored; the returned row carries the raw token, for the cookie.
    */
   public static async createSession(userId: string, ip: string, userAgent: string): Promise<Session> {
-    return db.session.create({
+    const token = `sess_${crypto.randomBytes(32).toString('hex')}`;
+
+    const session = await db.session.create({
       data: {
         userId,
-        token: `sess_${crypto.randomBytes(32).toString('hex')}`,
+        token: hashSessionToken(token),
         ip,
         userAgent,
         deviceType: this.parseDevice(userAgent),
         expiresAt: new Date(Date.now() + config.sessionDurationDays * 86400000),
       },
     });
+
+    return { ...session, token };
   }
 
   /**
@@ -228,7 +243,10 @@ export class AuthService {
    */
   public static async validateSession(token: string): Promise<{ user: PublicUser; session: Session } | null> {
     if (!token) return null;
-    const session = await db.session.findUnique({ where: { token }, include: { user: true } });
+    const session = await db.session.findUnique({
+      where: { token: hashSessionToken(token) },
+      include: { user: true },
+    });
     if (!session) return null;
 
     if (session.expiresAt.getTime() < Date.now()) {
@@ -250,7 +268,7 @@ export class AuthService {
    * Invalidate a single session
    */
   public static async logout(token: string, ip: string, userAgent: string) {
-    const session = await db.session.findUnique({ where: { token } });
+    const session = await db.session.findUnique({ where: { token: hashSessionToken(token) } });
     if (!session) return;
 
     await db.session.delete({ where: { id: session.id } });

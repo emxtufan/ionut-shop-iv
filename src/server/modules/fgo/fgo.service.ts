@@ -321,6 +321,17 @@ export class FgoService {
   }
 
   /**
+   * Waits for the running queue pass to finish, so a shutdown never cuts an invoice in half.
+   * Gives up after 10s: the database connection is closed right after this returns.
+   */
+  public static async waitIdle(timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (FgoService.running && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  /**
    * Sends one invoice through the whole FGO flow. Calling it again after a failure
    * skips every step that is already done.
    */

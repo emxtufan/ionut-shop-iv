@@ -33,8 +33,8 @@ export class AuthController {
       return res.status(201).json({ user });
     } catch (err: any) {
       const messageMap: Record<string, string> = {
-        EMAIL_ALREADY_EXISTS: 'O adresă de email identică este deja înregistrată.',
-        USERNAME_ALREADY_EXISTS: 'Acest nume de utilizator este deja folosit.',
+        ACCOUNT_UNAVAILABLE:
+          'Nu am putut crea contul cu aceste date. Dacă ai deja cont, autentifică-te sau resetează parola.',
         PASSWORD_TOO_SHORT: 'Parola trebuie să aibă minim 8 caractere.',
         PASSWORD_TOO_LONG: 'Parola poate avea maxim 128 de caractere.',
         EMAIL_INVALID: 'Adresa de email nu este validă.',
