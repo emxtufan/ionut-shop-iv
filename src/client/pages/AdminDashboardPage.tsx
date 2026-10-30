@@ -32,6 +32,7 @@ import {
 } from '@ant-design/icons';
 import { Video, AuditLog, Category, EmailLog } from '../../types/index.ts';
 import { AdminUsersTab } from './AdminUsersTab.tsx';
+import { AdminInvoicesTab } from './AdminInvoicesTab.tsx';
 import { AdminCategoriesTab } from './AdminCategoriesTab.tsx';
 import { AdminSettingsTab } from './AdminSettingsTab.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
@@ -939,6 +940,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             key: 'users',
             label: 'Utilizatori',
             children: <AdminUsersTab />,
+          },
+          {
+            key: 'invoices',
+            label: 'Facturi',
+            children: <AdminInvoicesTab />,
           },
           {
             key: 'categories',
