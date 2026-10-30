@@ -119,6 +119,7 @@ export const SecurePlayer: React.FC<SecurePlayerProps> = ({ videoId, videoTitle,
           <iframe
             src={authData.embedUrl}
             title={videoTitle}
+            referrerPolicy="strict-origin-when-cross-origin"
             className="absolute inset-0 w-full h-full border-0"
             allow="accelerometer; gyroscope; autoplay; encrypted-media"
           />

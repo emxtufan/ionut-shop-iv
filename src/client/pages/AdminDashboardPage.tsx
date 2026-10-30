@@ -630,7 +630,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-ink/10 pb-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink tracking-tight">
-            Studio Administration
+            Administrare studio
           </h1>
           <p className="text-xs text-muted mt-1">
             Platformă de administrare a catalogului, streaming securizat nativ și gateway plăți Stripe.
@@ -665,7 +665,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         items={[
           {
             key: 'overview',
-            label: 'Overview',
+            label: 'Prezentare generală',
             children: (
               <div className="space-y-8 pt-2">
                 {/* 4 Clean Essential KPI Cards */}
@@ -797,7 +797,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           },
           {
             key: 'security',
-            label: 'Audit & Live Feed',
+            label: 'Audit și activitate live',
             children: (
               <div className="pt-2 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1191,7 +1191,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
             <div className="border border-ink/15 rounded-xl overflow-hidden bg-sand max-h-[480px] overflow-y-auto">
               <iframe
-                title="Email Preview"
+                title="Previzualizare email"
                 srcDoc={previewEmail.html}
                 className="w-full h-[460px] border-none bg-sand"
                 sandbox=""

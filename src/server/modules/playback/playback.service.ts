@@ -15,6 +15,7 @@ import { BunnyService, syncProcessingVideos } from '../bunny/bunny.service.ts';
 
 /** Lifetime of the signed embed URL; the player verifies it once, when the iframe loads. */
 const PLAYBACK_TOKEN_TTL_SECONDS = 600;
+// ponytail: 10 min, verificat la încărcarea iframe-ului; dacă Bunny oprește redarea la expirare, reînnoiește prin heartbeat.
 
 export class PlaybackService {
   /**

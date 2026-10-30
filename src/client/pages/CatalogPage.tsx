@@ -185,7 +185,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
       {latestVideos.length > 0 && (
         <section className="space-y-5">
           <h2 className="text-lg font-semibold text-ink tracking-tight">
-            Latest
+            Cele mai noi
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
             {latestVideos.map((video) => (

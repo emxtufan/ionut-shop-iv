@@ -20,7 +20,7 @@ Configurația e citită doar de `src/server/config.ts`. Dacă lipsește o variab
 | `ADMIN_PASSWORD` | minim 12 caractere, ideal generată de un manager de parole | Se folosește **doar la prima pornire**, când se creează contul. După aceea **șterge linia** din `.env`. |
 | `SETTINGS_ENCRYPTION_KEY` | **opțional** | Cheia cu care se criptează parolele și cheile API salvate din Admin → Setări. Las-o goală: aplicația generează singură `UPLOAD_DIR/.settings.key`. O pui doar dacă vrei cheia în afara folderului de stocare. Dacă o schimbi, valorile secrete salvate anterior nu mai pot fi citite și trebuie reintroduse din panou. |
 
-După ce ai pus `DATABASE_URL`, rulează o dată `npm run db:migrate` ca să se creeze tabelele.
+După ce ai pus `DATABASE_URL`, rulează o dată `npm run db:migrate` ca să se creeze tabelele. După fiecare actualizare rulează `npm run db:migrate` și `npm run build`.
 
 ## Ce se configurează din Admin → Setări
 
@@ -42,10 +42,13 @@ Intră cu contul de admin → **Setări**. Doar contul `SUPER_ADMIN` are acces; 
 | API Key | Tot acolo, „API Key”. Atenție: e cheia **bibliotecii**, nu cheia contului din Account settings. |
 | Token authentication key | Biblioteca → **Security** → activezi „Embed view token authentication” → „Token authentication key”. |
 
-În același tab **Security** mai faci două lucruri:
+În același tab **Security** mai faci trei lucruri:
 
 - Activezi **MediaCage DRM**. Basic e gratuit și blochează programele de descărcare. Enterprise e plătit și dă ecran negru la înregistrarea ecranului pe multe dispozitive.
-- La **Allowed domains** pui doar domeniul tău. Adaugă și `localhost` cât testezi local, apoi scoate-l.
+- La **Allowed Domains** pui domeniul site-ului tău: fără `https://`, exact, inclusiv `www` dacă site-ul e accesat cu `www`. Adaugă și `localhost` cât testezi local, apoi scoate-l.
+- Bifezi **Block Direct URL File Access**. Token authentication pentru embed trebuie să fie activ.
+
+Linkul playerului copiat din Bunny expiră în 10 minute.
 
 Când creezi biblioteca: alege regiunile de stocare cele mai apropiate de clienți (Europa). Rezoluțiile implicite sunt în regulă.
 

@@ -16,3 +16,5 @@ coverage/
 .ai/CODEMAP.md
 .ai/codemap.json
 __pycache__/
+graphify-out/
+.mcp.json

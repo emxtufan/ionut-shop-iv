@@ -189,7 +189,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({ purchasesVersion }
               onClick={() => window.open(`/api/account/invoices/${invoice.id}/print`, '_blank')}
               className="text-xs text-muted hover:text-ink-soft"
             >
-              Print
+              Tipărește
             </Button>
           </div>
         );
@@ -293,7 +293,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({ purchasesVersion }
             <div className="flex items-start justify-between border-b border-ink/10 pb-4">
               <div>
                 <span className="inline-block px-2.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 text-[11px] font-semibold uppercase tracking-wider mb-1.5">
-                  Achitat • Stripe Card
+                  Achitat • card
                 </span>
                 <h3 className="text-lg font-semibold text-ink tracking-tight">
                   Factură Fiscală Digitală
