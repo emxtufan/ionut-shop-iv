@@ -50,6 +50,9 @@ const USER_AGENT = `cinevault-smoke/${PREFIX}`;
 // Unique per run so the in-memory rate limiter (bucket per action + IP) starts empty
 const CLIENT_IP = `10.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
 const SESSION_COOKIE = 'cinevault_session';
+// Case L (admin settings + password change) uses its own client IP, so the per-IP rate
+// limiter buckets it touches (api_general, auth_attempt) start empty and stay isolated
+const SETTINGS_CLIENT_IP = `172.16.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
 
 const BUYER_EMAIL = `${PREFIX}-buyer@example.com`;
 const BUYER_USERNAME = `${PREFIX}-buyer`;
@@ -75,6 +78,8 @@ const state = {
   categoryIds: [],
   stripeSessionIds: [],
   emails: [],
+  // Setting keys written by case L, removed again through the API in the `finally`
+  settingsTouched: [],
 };
 
 let failures = 0;
@@ -153,6 +158,28 @@ async function api(method, path, options = {}) {
       : [res.headers.get('set-cookie')].filter(Boolean);
 
   return { status: res.status, headers: res.headers, text, json: parseJson(text), setCookie };
+}
+
+// Same HTTP helper, but tagged with the case-L client IP (see SETTINGS_CLIENT_IP)
+function settingsApi(method, path, options = {}) {
+  return api(method, path, {
+    ...options,
+    headers: { 'x-forwarded-for': SETTINGS_CLIENT_IP, ...(options.headers || {}) },
+  });
+}
+
+// Saves settings and remembers every key the server accepted, so the `finally` block can
+// strip those overrides through the same API (PUT <key>: null) before the DB cleanup
+async function putSettings(values, token = state.tokens.super) {
+  const response = await settingsApi('PUT', '/api/admin/settings', { token, body: { values } });
+
+  if (response.status === 200) {
+    for (const key of Object.keys(values)) {
+      if (!state.settingsTouched.includes(key)) state.settingsTouched.push(key);
+    }
+  }
+
+  return response;
 }
 
 function cookieValue(response, name) {
@@ -436,6 +463,36 @@ async function cleanup() {
   }
 
   await prisma.$disconnect().catch(() => {});
+}
+
+// ------------------------------------------------------------------------------
+// Settings written by case L are removed through the API (PUT <key>: null), so the
+// running server drops the overrides and falls back to the environment values. This
+// has to happen before the database cleanup: deleting the rows by hand would leave
+// the test values loaded in the live `config` object of the server.
+// ------------------------------------------------------------------------------
+async function restoreSettings() {
+  if (!state.settingsTouched.length) return;
+
+  console.log('\n— cleanup setări —');
+
+  if (!state.tokens.super) {
+    console.warn('! lipsește sesiunea SUPER_ADMIN; setările scrise nu au putut fi scoase prin API');
+    return;
+  }
+
+  const values = Object.fromEntries(state.settingsTouched.map(key => [key, null]));
+
+  try {
+    const response = await putSettings(values);
+    if (response.status !== 200) {
+      console.warn(`! setările nu au putut fi scoase (status ${response.status}): ${response.text.slice(0, 200)}`);
+      return;
+    }
+    console.log(`  setări readuse la valorile din env: ${state.settingsTouched.join(', ')}`);
+  } catch (err) {
+    console.warn(`! cleanup setări: ${err.message}`);
+  }
 }
 
 // ==============================================================================
@@ -961,7 +1018,240 @@ try {
     });
     assert.equal(entitlement?.status, 'REVOKED', 'K: entitlement nu e REVOKED după ștergerea contului');
   });
+
+  // Case L runs on its own client IP (SETTINGS_CLIENT_IP) and every setting it writes is
+  // removed again with `PUT <key>: null` (see `state.settingsTouched` and restoreSettings).
+  await runCase('L) setări: RBAC, secrete mascate, validare, aplicare imediată, change-password', async () => {
+    const caseStart = new Date();
+    const superToken = state.tokens.super;
+    assert.ok(superToken, 'L: lipsește sesiunea SUPER_ADMIN din seed');
+
+    const unknownKey = 'SMOKE_SETTING_NECUNOSCUT';
+    const smtpSecret = `smoke-secret-${RAND}-9999`;
+
+    // --- RBAC ---------------------------------------------------------------
+    const noCookie = await settingsApi('GET', '/api/admin/settings');
+    expectStatus(noCookie, 401, 'L GET setări fără cookie');
+
+    const asUser = await settingsApi('GET', '/api/admin/settings', { token: state.tokens.other });
+    expectStatus(asUser, 403, 'L GET setări ca utilizator normal');
+
+    const asAdminGet = await settingsApi('GET', '/api/admin/settings', { token: state.tokens.admin });
+    expectStatus(asAdminGet, 403, 'L GET setări ca ADMIN');
+
+    const asAdminPut = await putSettings({ COMPANY_NAME: `${PREFIX} interzis` }, state.tokens.admin);
+    expectStatus(asAdminPut, 403, 'L PUT setări ca ADMIN');
+
+    const asAdminStripeTest = await settingsApi('POST', '/api/admin/settings/test/stripe', {
+      token: state.tokens.admin,
+    });
+    expectStatus(asAdminStripeTest, 403, 'L POST test/stripe ca ADMIN');
+
+    const settingsResponse = await settingsApi('GET', '/api/admin/settings', { token: superToken });
+    expectStatus(settingsResponse, 200, 'L GET setări ca SUPER_ADMIN');
+    assert.ok(Array.isArray(settingsResponse.json?.settings), 'L: răspunsul nu conține settings[]');
+
+    // The real secret values (env or saved) must never travel back to the browser
+    const envSecrets = {
+      STRIPE_SECRET_KEY: String(process.env.STRIPE_SECRET_KEY || ''),
+      SMTP_PASS: String(process.env.SMTP_PASS || ''),
+      BUNNY_STREAM_API_KEY: String(process.env.BUNNY_STREAM_API_KEY || ''),
+      DATABASE_URL: String(process.env.DATABASE_URL || ''),
+    };
+    const presentSecrets = Object.entries(envSecrets).filter(([, value]) => value.length >= 6);
+    for (const [name, value] of presentSecrets) {
+      assert.ok(!settingsResponse.text.includes(value), `L: GET setări conține valoarea din env a ${name}`);
+    }
+    for (const name of Object.keys(envSecrets)) {
+      if (!presentSecrets.some(([present]) => present === name)) {
+        console.log(`   (${name} lipsește din env sau e prea scurt; verificarea lui e sărită)`);
+      }
+    }
+
+    // --- Validation: nothing is written when any value is rejected -----------
+    const badStripeKey = await putSettings({ STRIPE_SECRET_KEY: 'abc' });
+    expectStatus(badStripeKey, 400, 'L PUT STRIPE_SECRET_KEY "abc"');
+    assert.equal(badStripeKey.json?.key, 'STRIPE_SECRET_KEY', 'L: răspunsul 400 nu indică cheia STRIPE_SECRET_KEY');
+
+    const badVat = await putSettings({ VAT_RATE: '2' });
+    expectStatus(badVat, 400, 'L PUT VAT_RATE "2"');
+
+    const unknown = await putSettings({ [unknownKey]: 'x' });
+    expectStatus(unknown, 400, 'L PUT cheie necunoscută');
+    assert.equal(unknown.json?.key, unknownKey, 'L: răspunsul 400 nu indică cheia necunoscută');
+
+    const companyBefore = await settingsApi('GET', '/api/public/company');
+    expectStatus(companyBefore, 200, 'L GET company înainte de modificări');
+    const companyNameBefore = companyBefore.json?.name;
+
+    const partiallyInvalid = await putSettings({ COMPANY_NAME: 'x', VAT_RATE: '2' });
+    expectStatus(partiallyInvalid, 400, 'L PUT COMPANY_NAME + VAT_RATE invalid');
+
+    const companyAfterPartial = await settingsApi('GET', '/api/public/company');
+    expectStatus(companyAfterPartial, 200, 'L GET company după PUT respins');
+    assert.equal(
+      companyAfterPartial.json?.name,
+      companyNameBefore,
+      'L: COMPANY_NAME s-a schimbat deși PUT-ul a fost respins cu 400'
+    );
+
+    // --- COMPANY_NAME: applied immediately, restored by null -----------------
+    const setCompany = await putSettings({ COMPANY_NAME: PREFIX });
+    expectStatus(setCompany, 200, 'L PUT COMPANY_NAME');
+
+    const companyLive = await settingsApi('GET', '/api/public/company');
+    expectStatus(companyLive, 200, 'L GET company după PUT COMPANY_NAME');
+    assert.equal(companyLive.json?.name, PREFIX, 'L: /api/public/company nu arată imediat numele salvat');
+
+    const clearCompany = await putSettings({ COMPANY_NAME: null });
+    expectStatus(clearCompany, 200, 'L PUT COMPANY_NAME null');
+
+    const companyRestored = await settingsApi('GET', '/api/public/company');
+    expectStatus(companyRestored, 200, 'L GET company după null');
+    assert.equal(
+      companyRestored.json?.name,
+      companyNameBefore,
+      'L: COMPANY_NAME nu a revenit la valoarea inițială după null'
+    );
+
+    // --- SMTP_PASS: encrypted at rest, masked everywhere --------------------
+    const settingsBefore = (settingsResponse.json?.settings || []).find(view => view.key === 'SMTP_PASS') || {};
+    const smtpSourceBefore = settingsBefore.source;
+
+    const setSmtp = await putSettings({ SMTP_PASS: smtpSecret });
+    expectStatus(setSmtp, 200, 'L PUT SMTP_PASS');
+
+    const smtpRow = await prisma.setting.findUnique({ where: { key: 'SMTP_PASS' } });
+    assert.ok(smtpRow, 'L: lipsește rândul Setting pentru SMTP_PASS după salvare');
+    assert.equal(smtpRow.isSecret, true, 'L: rândul Setting SMTP_PASS nu are isSecret true');
+    assert.ok(!smtpRow.value.includes(smtpSecret), 'L: rândul Setting păstrează secretul în clar');
+
+    const settingsAfterSecret = await settingsApi('GET', '/api/admin/settings', { token: superToken });
+    expectStatus(settingsAfterSecret, 200, 'L GET setări după PUT SMTP_PASS');
+    assert.ok(!settingsAfterSecret.text.includes(smtpSecret), 'L: GET setări întoarce secretul SMTP_PASS');
+
+    const smtpView = (settingsAfterSecret.json?.settings || []).find(view => view.key === 'SMTP_PASS') || {};
+    assert.equal(smtpView.source, 'admin', `L: SMTP_PASS nu are source "admin" (${smtpView.source})`);
+    assert.equal(smtpView.value, null, 'L: GET setări întoarce valoarea secretă a SMTP_PASS');
+    assert.ok(
+      String(smtpView.preview || '').endsWith('9999'),
+      `L: preview-ul SMTP_PASS nu se termină în 9999 (${smtpView.preview})`
+    );
+
+    // The audit trail records the key names only, never the values
+    const auditEntry = await waitFor(async () => {
+      const rows = await prisma.auditLog.findMany({
+        where: { eventType: 'ADMIN_UPDATED_SETTINGS', createdAt: { gte: caseStart } },
+      });
+      return rows.find(row => JSON.stringify(row.metadata || {}).includes('SMTP_PASS')) || null;
+    });
+    assert.ok(auditEntry, 'L: lipsește AuditLog-ul ADMIN_UPDATED_SETTINGS pentru SMTP_PASS');
+
+    const recentAudit = await prisma.auditLog.findMany({ where: { createdAt: { gte: caseStart } } });
+    for (const row of recentAudit) {
+      assert.ok(!JSON.stringify(row).includes(smtpSecret), `L: AuditLog ${row.eventType} conține secretul SMTP_PASS`);
+    }
+
+    const clearSmtp = await putSettings({ SMTP_PASS: null });
+    expectStatus(clearSmtp, 200, 'L PUT SMTP_PASS null');
+    assert.equal(await prisma.setting.findUnique({ where: { key: 'SMTP_PASS' } }), null, 'L: rândul Setting SMTP_PASS nu a fost șters');
+
+    const settingsAfterSmtp = await settingsApi('GET', '/api/admin/settings', { token: superToken });
+    expectStatus(settingsAfterSmtp, 200, 'L GET setări după null SMTP_PASS');
+    const smtpViewAfter = (settingsAfterSmtp.json?.settings || []).find(view => view.key === 'SMTP_PASS') || {};
+    assert.equal(
+      smtpViewAfter.source,
+      smtpSourceBefore,
+      `L: source SMTP_PASS nu a revenit la "${smtpSourceBefore}" (${smtpViewAfter.source})`
+    );
+
+    // --- Watermark: reaches the playback token, then back to defaults -------
+    const setWatermark = await putSettings({ WATERMARK_TEXT: 'smoke-wm', WATERMARK_INTERVAL_SECONDS: '7' });
+    expectStatus(setWatermark, 200, 'L PUT watermark');
+
+    const playback = await settingsApi('POST', `/api/playback/${state.ids.video}/token`, { token: superToken });
+    expectStatus(playback, 200, 'L playback token ca SUPER_ADMIN');
+    assert.equal(playback.json?.watermark?.text, 'smoke-wm', 'L: playback token nu întoarce watermark.text salvat');
+    assert.equal(playback.json?.watermark?.refreshIntervalSeconds, 7, 'L: refreshIntervalSeconds nu e 7');
+
+    const clearWatermark = await putSettings({ WATERMARK_TEXT: null, WATERMARK_INTERVAL_SECONDS: null });
+    expectStatus(clearWatermark, 200, 'L PUT watermark null');
+
+    // --- Connection tests: booleans, never the keys -------------------------
+    const stripeTest = await settingsApi('POST', '/api/admin/settings/test/stripe', { token: superToken });
+    expectStatus(stripeTest, 200, 'L POST test/stripe ca SUPER_ADMIN');
+    assert.equal(stripeTest.json?.ok, true, `L: testul Stripe a răspuns ok:${stripeTest.json?.ok} (${stripeTest.json?.message})`);
+    assert.equal(stripeTest.json?.details?.mode, 'test', 'L: testul Stripe nu raportează mode "test"');
+
+    for (const service of ['bunny', 'smtp']) {
+      const test = await settingsApi('POST', `/api/admin/settings/test/${service}`, { token: superToken });
+      expectStatus(test, 200, `L POST test/${service}`);
+      assert.equal(typeof test.json?.ok, 'boolean', `L: testul ${service} nu întoarce un ok boolean`);
+      for (const [name, value] of presentSecrets) {
+        assert.ok(!test.text.includes(value), `L: testul ${service} întoarce valoarea din env a ${name}`);
+      }
+    }
+
+    // --- stripe-webhook without an https APP_URL: 400, no real endpoint -----
+    const appUrlValue = String(
+      (settingsResponse.json?.settings || []).find(view => view.key === 'APP_URL')?.value || ''
+    );
+    if (/^https:\/\//i.test(appUrlValue)) {
+      console.log(`   (stripe-webhook: APP_URL e https (${appUrlValue}), cazul e sărit ca să nu creeze un endpoint real)`);
+    } else {
+      const webhookCreate = await settingsApi('POST', '/api/admin/settings/stripe-webhook', { token: superToken });
+      expectStatus(webhookCreate, 400, 'L POST stripe-webhook cu APP_URL ne-https');
+      assert.equal(webhookCreate.json?.error, 'APP_URL_NOT_HTTPS', 'L: motiv greșit pentru APP_URL ne-https');
+    }
+
+    // --- change-password on a dedicated user --------------------------------
+    const oldPassword = 'ParolaInitiala123!';
+    const nextPassword = 'ParolaSchimbata456!';
+    const passwordEmail = `${PREFIX}-parola@example.com`;
+    const hashPassword = await loadHashPassword();
+
+    const passwordUser = await prisma.user.create({
+      data: {
+        email: passwordEmail,
+        username: `${PREFIX}-parola`,
+        passwordHash: hashPassword(oldPassword),
+        role: 'USER',
+      },
+    });
+    state.userIds.push(passwordUser.id);
+    state.emails.push(passwordEmail);
+
+    const currentToken = await createPrismaSession(passwordUser.id);
+    const otherToken = await createPrismaSession(passwordUser.id);
+
+    const wrongCurrent = await settingsApi('POST', '/api/account/change-password', {
+      token: currentToken,
+      body: { currentPassword: 'ParolaGresita123!', newPassword: nextPassword },
+    });
+    expectStatus(wrongCurrent, 400, 'L change-password cu parolă actuală greșită');
+    assert.equal(wrongCurrent.json?.error, 'INVALID_PASSWORD', 'L: motiv greșit pentru parola actuală greșită');
+
+    const changed = await settingsApi('POST', '/api/account/change-password', {
+      token: currentToken,
+      body: { currentPassword: oldPassword, newPassword: nextPassword },
+    });
+    expectStatus(changed, 200, 'L change-password cu parolă actuală corectă');
+
+    const otherSession = await settingsApi('GET', '/api/auth/me', { token: otherToken });
+    expectStatus(otherSession, 401, 'L cealaltă sesiune după schimbarea parolei');
+
+    const currentSession = await settingsApi('GET', '/api/auth/me', { token: currentToken });
+    expectStatus(currentSession, 200, 'L sesiunea curentă după schimbarea parolei');
+
+    const loginNewPassword = await settingsApi('POST', '/api/auth/login', {
+      body: { identifier: passwordEmail, password: nextPassword },
+    });
+    expectStatus(loginNewPassword, 200, 'L login cu noua parolă');
+    assert.ok(cookieValue(loginNewPassword, SESSION_COOKIE), 'L: login reușit fără cookie de sesiune');
+  });
 } finally {
+  // Settings first (through the API, so the server reloads the env values), then the DB rows
+  await restoreSettings();
   await cleanup();
 
   console.log('');
