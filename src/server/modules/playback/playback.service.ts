@@ -103,7 +103,7 @@ export class PlaybackService {
       });
     }
 
-    // 4. New playback session + signed Bunny embed URL, valid for the length of the film plus one hour
+    // 4. New playback session + signed Bunny embed URL, valid for 10 minutes (PLAYBACK_TOKEN_TTL_SECONDS)
     const jti = crypto.randomBytes(16).toString('hex');
     const expires = Math.floor(Date.now() / 1000) + PLAYBACK_TOKEN_TTL_SECONDS;
 

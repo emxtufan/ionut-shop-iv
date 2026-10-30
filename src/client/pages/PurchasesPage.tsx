@@ -374,7 +374,7 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({ purchasesVersion }
                 onClick={() => window.open(`/api/account/invoices/${selectedReceipt.invoice.id}/print`, '_blank')}
                 className="flex-1 bg-ink text-cream hover:!bg-ink-soft hover:!text-cream border-none font-medium text-xs h-10 rounded-xl"
               >
-                Printează / Descarcă PDF
+                Tipărește / Descarcă PDF
               </Button>
               <Button
                 onClick={() => setSelectedReceipt(null)}
