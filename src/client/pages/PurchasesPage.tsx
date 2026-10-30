@@ -3,6 +3,7 @@ import { Table, Tag, Button, Modal, Input, Empty, Skeleton, message } from 'antd
 import { FileTextOutlined, PrinterOutlined, CheckCircleOutlined, DownloadOutlined, DeleteOutlined } from '@ant-design/icons';
 import { Purchase } from '../../types/index.ts';
 import { useAuth } from '../context/AuthContext.tsx';
+import { ChangePasswordForm } from '../components/ChangePasswordForm.tsx';
 
 export const PurchasesPage: React.FC = () => {
   const { user, logout } = useAuth();
@@ -216,6 +217,16 @@ export const PurchasesPage: React.FC = () => {
           >
             Șterge contul
           </Button>
+        </div>
+
+        <div className="pt-3 border-t border-ink/10 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-ink">Schimbă parola</h3>
+            <p className="text-xs text-muted mt-1">
+              Folosește parola actuală pentru a seta una nouă.
+            </p>
+          </div>
+          <ChangePasswordForm />
         </div>
       </div>
 

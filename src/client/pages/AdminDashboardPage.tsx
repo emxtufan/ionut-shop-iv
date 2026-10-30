@@ -33,6 +33,8 @@ import {
 import { Video, AuditLog, Category, EmailLog } from '../../types/index.ts';
 import { AdminUsersTab } from './AdminUsersTab.tsx';
 import { AdminCategoriesTab } from './AdminCategoriesTab.tsx';
+import { AdminSettingsTab } from './AdminSettingsTab.tsx';
+import { useAuth } from '../context/AuthContext.tsx';
 
 // Sends a file as the raw request body, reporting upload progress (fetch has no upload progress)
 function uploadFile(url: string, file: File, onProgress: (percent: number) => void): Promise<any> {
@@ -78,6 +80,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
   initialSubTab = 'overview',
   onExitAdmin,
 }) => {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN';
+
   const [activeTab, setActiveTab] = useState<string>(initialSubTab);
 
   // Data states
@@ -949,6 +954,16 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               />
             ),
           },
+          // Settings hold every secret: SUPER_ADMIN only
+          ...(isSuperAdmin
+            ? [
+                {
+                  key: 'settings',
+                  label: 'Setări',
+                  children: <AdminSettingsTab />,
+                },
+              ]
+            : []),
         ]}
       />
 
