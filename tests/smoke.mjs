@@ -13,6 +13,9 @@
 
 import assert from 'node:assert';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
 import 'dotenv/config';
 import Stripe from 'stripe';
 import { PrismaClient } from '@prisma/client';
@@ -53,6 +56,9 @@ const SESSION_COOKIE = 'cinevault_session';
 // Case L (admin settings + password change) uses its own client IP, so the per-IP rate
 // limiter buckets it touches (api_general, auth_attempt) start empty and stay isolated
 const SETTINGS_CLIENT_IP = `172.16.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
+// Case M (FGO invoicing) talks to its own server process; this IP only reaches that process,
+// so the per-IP rate limiter buckets it touches start empty as well
+const FGO_CLIENT_IP = `172.20.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
 
 const BUYER_EMAIL = `${PREFIX}-buyer@example.com`;
 const BUYER_USERNAME = `${PREFIX}-buyer`;
@@ -80,6 +86,8 @@ const state = {
   emails: [],
   // Setting keys written by case L, removed again through the API in the `finally`
   settingsTouched: [],
+  // Handles of the case M harness (mock FGO, mock SMTP, server process), closed in the `finally`
+  fgo: null,
 };
 
 let failures = 0;
@@ -493,6 +501,411 @@ async function restoreSettings() {
   } catch (err) {
     console.warn(`! cleanup setări: ${err.message}`);
   }
+}
+
+// ------------------------------------------------------------------------------
+// Case M harness: a local FGO API mock, a local SMTP sink and a second server process
+// started with its own environment (FGO enabled and pointed at the mock, SMTP pointed at
+// the sink). Everything is closed again by `stopFgoHarness()` in the `finally` block.
+// ------------------------------------------------------------------------------
+const FGO_API_KEY = 'fgo_api_v1.test';
+const FGO_COD_UNIC = '12345678';
+const FGO_SERIES = 'TST';
+const FGO_LAST_NUMBER = '000123';
+const FGO_STORNO_SERIES = 'STR';
+// What FGO answers when the invoice already exists there
+const FGO_DUPLICATE = { serie: 'DUP', numar: '000900' };
+const FGO_VALIDATION_MESSAGE = 'Codul unic al clientului nu este valid.';
+const FGO_VALID_CUI = '18547290';
+// Same CUI with the control digit broken
+const FGO_INVALID_CUI = '18547291';
+const FGO_BUYER_EMAIL = `${PREFIX}-fgo@example.com`;
+const FGO_BUYER_USERNAME = `${PREFIX}-fgo`;
+const FGO_BUYER_PASSWORD = 'ParolaFgo123!';
+const FGO_BILLING = {
+  type: 'PJ',
+  name: `${PREFIX} Firma FGO S.R.L.`,
+  cui: FGO_VALID_CUI,
+  regCom: `J40/${RAND}`,
+  country: 'RO',
+  county: 'B',
+  city: 'București',
+  address: 'Str. Testului nr. 1, sector 1',
+  phone: '+40712345678',
+};
+
+// Sockets are tracked so a hanging client (SMTP keeps the connection a moment) never blocks close
+function trackSockets(server) {
+  const sockets = new Set();
+  server.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  return sockets;
+}
+
+function listenOnEphemeralPort(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+  });
+}
+
+function closeServer(server, sockets) {
+  return new Promise(resolve => {
+    if (!server || !server.listening) return resolve();
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    for (const socket of sockets || []) socket.destroy();
+    server.close(() => resolve());
+  });
+}
+
+async function freeTcpPort() {
+  const probe = net.createServer();
+  try {
+    return await listenOnEphemeralPort(probe);
+  } finally {
+    await closeServer(probe);
+  }
+}
+
+// Mock of the FGO API: answers every route of the invoice flow and records every request
+async function startFgoMock() {
+  const mock = {
+    url: '',
+    // Switched per step: 'ok' | 'error500' | 'validation' | 'duplicate'
+    mode: 'ok',
+    requests: [],
+  };
+
+  mock.server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      let body = null;
+      try {
+        body = raw ? JSON.parse(raw) : null;
+      } catch {
+        body = null;
+      }
+
+      const path = String(req.url || '').split('?')[0];
+      mock.requests.push({ method: req.method, path, headers: req.headers, body });
+
+      const send = (status, payload, contentType = 'application/json') => {
+        res.writeHead(status, { 'content-type': contentType });
+        res.end(JSON.stringify(payload));
+      };
+
+      // The failures are switched on the emission call only: the rest of the flow keeps answering
+      if (req.method === 'POST' && path === '/v2/facturi') {
+        if (mock.mode === 'error500') {
+          return send(500, { title: 'Eroare internă FGO', detail: 'Eroare internă FGO.' });
+        }
+        if (mock.mode === 'validation') {
+          return send(
+            400,
+            {
+              type: 'about:blank',
+              title: 'Cerere invalidă',
+              detail: 'Factura nu a trecut validarea.',
+              validation_errors: [{ loc: ['body', 'client'], issues: [{ message: FGO_VALIDATION_MESSAGE }] }],
+            },
+            'application/problem+json'
+          );
+        }
+        if (mock.mode === 'duplicate') {
+          return send(
+            400,
+            {
+              type: 'about:blank',
+              title: 'Factura există deja',
+              detail: 'Factura a fost emisă deja pentru acest id extern.',
+              motiv: { cod: 'factura_duplicata', args: FGO_DUPLICATE },
+            },
+            'application/problem+json'
+          );
+        }
+        return send(200, { data: { serie: body?.serie ?? null, numar: body?.numar ?? null, stocuri: [] }, meta: {} });
+      }
+
+      if (req.method === 'GET' && path === '/v2/identitate') {
+        return send(200, {
+          data: { drepturi: ['facturi:emitere', 'facturi:citire', 'facturi:anulare', 'facturi:incasare', 'facturi:spv'] },
+          meta: {},
+        });
+      }
+      if (req.method === 'GET' && /^\/v2\/facturi\/[^/]+\/[^/]+$/.test(path)) {
+        return send(200, { data: { valoare_achitata: 0 }, meta: {} });
+      }
+      if (req.method === 'POST' && path.endsWith('/incasari')) {
+        return send(200, { data: { success: true }, meta: {} });
+      }
+      if (req.method === 'POST' && path.endsWith('/genereaza-link-de-descarcare')) {
+        return send(200, { data: { link: `${mock.url}/pdf/x` }, meta: {} });
+      }
+      if (req.method === 'POST' && path.endsWith('/trimite-in-spv')) {
+        return send(200, { data: null, meta: {} });
+      }
+      if (req.method === 'POST' && path.endsWith('/storneaza')) {
+        return send(200, {
+          data: { serie: body?.serie_storno || FGO_STORNO_SERIES, numar: body?.numar_storno || '000001' },
+          meta: {},
+        });
+      }
+      if (req.method === 'GET' && path === '/pdf/x') {
+        res.writeHead(200, { 'content-type': 'application/pdf' });
+        return res.end('%PDF-1.4 test');
+      }
+
+      return send(404, { title: 'NOT_FOUND' });
+    });
+  });
+
+  mock.sockets = trackSockets(mock.server);
+  const port = await listenOnEphemeralPort(mock.server);
+  mock.url = `http://127.0.0.1:${port}`;
+  return mock;
+}
+
+// Minimal SMTP sink: just enough of the dialogue for nodemailer, and the DATA bodies are kept
+async function startSmtpSink() {
+  const sink = { port: 0, messages: [], server: null };
+
+  sink.server = net.createServer(socket => {
+    let buffer = '';
+    let payload = '';
+    let inData = false;
+    let authStep = null;
+
+    socket.on('error', () => {});
+    socket.write('220 smoke-smtp ESMTP ready\r\n');
+
+    socket.on('data', chunk => {
+      buffer += chunk.toString('utf8');
+
+      for (;;) {
+        if (inData) {
+          const end = buffer.indexOf('\r\n.\r\n');
+          if (end === -1) return;
+          payload += buffer.slice(0, end);
+          buffer = buffer.slice(end + 5);
+          inData = false;
+          sink.messages.push(payload);
+          payload = '';
+          socket.write('250 2.0.0 Ok: queued as smoke\r\n');
+          continue;
+        }
+
+        const newline = buffer.indexOf('\r\n');
+        if (newline === -1) return;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 2);
+        const command = line.toUpperCase();
+
+        // AUTH LOGIN sends the user and the password as two bare base64 lines
+        if (authStep === 'user') {
+          authStep = 'pass';
+          socket.write('334 UGFzc3dvcmQ6\r\n');
+          continue;
+        }
+        if (authStep === 'pass') {
+          authStep = null;
+          socket.write('235 2.7.0 Authentication successful\r\n');
+          continue;
+        }
+
+        if (command.startsWith('EHLO')) {
+          socket.write('250-smoke-smtp\r\n250-8BITMIME\r\n250 SIZE 10485760\r\n');
+        } else if (command.startsWith('HELO')) {
+          socket.write('250 smoke-smtp\r\n');
+        } else if (command.startsWith('AUTH LOGIN')) {
+          authStep = 'user';
+          socket.write('334 VXNlcm5hbWU6\r\n');
+        } else if (command.startsWith('AUTH')) {
+          socket.write('235 2.7.0 Authentication successful\r\n');
+        } else if (command === 'DATA') {
+          inData = true;
+          socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+        } else if (command === 'QUIT') {
+          socket.write('221 2.0.0 Bye\r\n');
+          socket.end();
+          return;
+        } else {
+          socket.write('250 2.0.0 Ok\r\n');
+        }
+      }
+    });
+  });
+
+  sink.sockets = trackSockets(sink.server);
+  sink.port = await listenOnEphemeralPort(sink.server);
+  return sink;
+}
+
+// Second server process: same sources and database, its own FGO / SMTP environment
+async function startFgoServer(harness) {
+  const port = await freeTcpPort();
+  harness.baseUrl = `http://127.0.0.1:${port}`;
+
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      TRUST_PROXY_HOPS: '1',
+      APP_URL: harness.baseUrl,
+      FGO_ENABLED: 'true',
+      FGO_API_URL: harness.mock.url,
+      FGO_API_KEY,
+      FGO_COD_UNIC,
+      FGO_PLATFORM_URL: harness.baseUrl,
+      FGO_SERIES,
+      FGO_STORNO_SERIES: '',
+      FGO_LAST_NUMBER,
+      FGO_INVOICE_TYPE: 'F',
+      FGO_PAYMENT_TYPE: 'Banca',
+      FGO_UM: 'buc',
+      FGO_SEND_SPV: 'true',
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: String(harness.smtp.port),
+      SMTP_SECURE: 'false',
+      SMTP_USER: '',
+      SMTP_PASS: '',
+      SMTP_FROM: 'Smoke Test <smoke@example.com>',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  harness.child = child;
+
+  const remember = chunk => {
+    for (const line of String(chunk).split('\n')) {
+      if (!line.trim()) continue;
+      harness.output.push(line.trimEnd());
+      if (harness.output.length > 40) harness.output.shift();
+    }
+  };
+  child.stdout.on('data', remember);
+  child.stderr.on('data', remember);
+  child.on('exit', (code, signal) => {
+    harness.exit = { code, signal };
+  });
+
+  const ready = await waitFor(
+    async () => {
+      if (harness.exit) {
+        throw new Error(`serverul FGO a ieșit (cod ${harness.exit.code}): ${harness.output.slice(-8).join(' | ')}`);
+      }
+      try {
+        const response = await fetch(`${harness.baseUrl}/api/health`);
+        return response.ok ? response.status : null;
+      } catch {
+        return null;
+      }
+    },
+    { timeoutMs: 90_000, intervalMs: 250 }
+  );
+
+  assert.ok(ready, `M: serverul FGO nu a pornit în 90s: ${harness.output.slice(-8).join(' | ')}`);
+}
+
+async function startFgoHarness() {
+  const harness = {
+    mock: null,
+    smtp: null,
+    child: null,
+    baseUrl: null,
+    exit: null,
+    output: [],
+    // The invoice counter row FgoService writes; it is put back exactly as it was in the `finally`
+    lastNumberRowBefore: await prisma.setting.findUnique({ where: { key: 'FGO_LAST_NUMBER' } }),
+  };
+  state.fgo = harness;
+
+  // Every run has to start from the env counter (000123), never from the value a previous run left
+  await prisma.setting.deleteMany({ where: { key: 'FGO_LAST_NUMBER' } });
+
+  harness.mock = await startFgoMock();
+  harness.smtp = await startSmtpSink();
+  await startFgoServer(harness);
+
+  return harness;
+}
+
+async function restoreFgoLastNumber(harness) {
+  try {
+    const row = harness.lastNumberRowBefore;
+    if (!row) {
+      await prisma.setting.deleteMany({ where: { key: 'FGO_LAST_NUMBER' } });
+      return;
+    }
+    await prisma.setting.upsert({
+      where: { key: row.key },
+      create: { key: row.key, value: row.value, isSecret: row.isSecret, updatedBy: row.updatedBy },
+      update: { value: row.value, isSecret: row.isSecret, updatedBy: row.updatedBy },
+    });
+  } catch (err) {
+    console.warn(`! cleanup FGO_LAST_NUMBER: ${err.message}`);
+  }
+}
+
+async function stopFgoHarness() {
+  const harness = state.fgo;
+  if (!harness) return;
+  state.fgo = null;
+
+  console.log('\n— cleanup FGO —');
+
+  if (harness.child && !harness.exit) {
+    harness.child.kill('SIGTERM');
+    const stopped = await waitFor(() => harness.exit, { timeoutMs: 10_000, intervalMs: 100 });
+    if (!stopped) harness.child.kill('SIGKILL');
+  }
+
+  await closeServer(harness.mock?.server, harness.mock?.sockets);
+  await closeServer(harness.smtp?.server, harness.smtp?.sockets);
+  await restoreFgoLastNumber(harness);
+
+  console.log('  serverul FGO + mock-urile au fost oprite');
+}
+
+// Same HTTP helper as `api`, aimed at the case M server and its own client IP
+async function fgoApi(method, path, options = {}) {
+  const { token, body, rawBody, headers = {} } = options;
+
+  const requestHeaders = {
+    'user-agent': USER_AGENT,
+    'x-forwarded-for': FGO_CLIENT_IP,
+  };
+
+  let payload;
+  if (rawBody !== undefined) {
+    payload = rawBody;
+    requestHeaders['content-type'] = 'application/json';
+  } else if (body !== undefined) {
+    payload = JSON.stringify(body);
+    requestHeaders['content-type'] = 'application/json';
+  }
+  if (token) requestHeaders.cookie = `${SESSION_COOKIE}=${token}`;
+  Object.assign(requestHeaders, headers);
+
+  const response = await fetch(`${state.fgo.baseUrl}${path}`, {
+    method,
+    headers: requestHeaders,
+    body: payload,
+    redirect: 'manual',
+  });
+
+  const text = await response.text();
+  return { status: response.status, headers: response.headers, text, json: parseJson(text) };
+}
+
+// Same signed Stripe webhook as `signedWebhook`, delivered to the case M server
+function signedWebhookTo(event) {
+  const payload = JSON.stringify(event);
+  const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: STRIPE_WEBHOOK_SECRET });
+  return fgoApi('POST', '/api/payments/webhook', { rawBody: payload, headers: { 'stripe-signature': signature } });
 }
 
 // ==============================================================================
@@ -1249,8 +1662,427 @@ try {
     expectStatus(loginNewPassword, 200, 'L login cu noua parolă');
     assert.ok(cookieValue(loginNewPassword, SESSION_COOKIE), 'L: login reușit fără cookie de sesiune');
   });
+
+  // Case M runs against its own server process (own env: FGO + SMTP point at the local mocks),
+  // its own client IP (FGO_CLIENT_IP) and its own buyer. The harness is closed by
+  // `stopFgoHarness()` in the `finally` block.
+  await runCase('M) FGO: emitere, duplicat, erori, storno, SPV, email, confidențialitate', async () => {
+    const { mock, smtp, baseUrl } = await startFgoHarness();
+
+    // --- Fixtures: FGO buyer, one video per flow -----------------------------
+    const hashPassword = await loadHashPassword();
+    const buyer = await prisma.user.create({
+      data: {
+        email: FGO_BUYER_EMAIL,
+        username: FGO_BUYER_USERNAME,
+        passwordHash: hashPassword(FGO_BUYER_PASSWORD),
+        role: 'USER',
+      },
+    });
+    state.userIds.push(buyer.id);
+    state.emails.push(buyer.email);
+    const buyerToken = await createPrismaSession(buyer.id);
+
+    const makeVideo = async suffix => {
+      const video = await prisma.video.create({
+        data: {
+          title: `${PREFIX} fgo ${suffix}`,
+          slug: `${PREFIX}-fgo-${suffix}`,
+          description: 'Film de test pentru facturarea FGO.',
+          categoryId: state.ids.catMain,
+          tags: ['smoke', RAND],
+          priceAmount: 10,
+          currency: 'EUR',
+          durationSeconds: 60,
+          status: 'READY',
+          isPublished: true,
+          publishedAt: new Date(),
+          bunnyVideoId: `${PREFIX}-bunny-fgo-${suffix}`,
+        },
+      });
+      state.videoIds.push(video.id);
+      return video;
+    };
+
+    const videoMain = await makeVideo('principal');
+    const videoSecond = await makeVideo('doi');
+    const videoDouble = await makeVideo('dublu');
+    const videoError = await makeVideo('eroare');
+    const videoValidation = await makeVideo('validare');
+
+    // Checkout and signed webhook, exactly like cases C/D (real Stripe test session)
+    const checkout = async (videoId, label) => {
+      await avoidMinuteBoundary();
+      const response = await fgoApi('POST', `/api/payments/checkout/${videoId}`, {
+        token: buyerToken,
+        body: { acceptedTerms: true, billing: FGO_BILLING },
+      });
+      expectStatus(response, 200, `M checkout ${label}`);
+      const payment = await prisma.payment.findFirst({
+        where: { userId: buyer.id, videoId },
+        orderBy: { createdAt: 'desc' },
+      });
+      assert.ok(payment, `M: lipsește rândul Payment după checkout (${label})`);
+      state.stripeSessionIds.push(payment.checkoutSessionId);
+      return payment;
+    };
+
+    const completedEvent = (payment, paymentIntentId, suffix) =>
+      eventOf(
+        'checkout.session.completed',
+        {
+          id: payment.checkoutSessionId,
+          object: 'checkout.session',
+          mode: 'payment',
+          payment_status: 'paid',
+          payment_intent: paymentIntentId,
+          invoice: null,
+          amount_total: 1000,
+          currency: 'eur',
+          created: Math.floor(Date.now() / 1000),
+          metadata: { userId: buyer.id, videoId: payment.videoId },
+        },
+        suffix
+      );
+
+    const payAndWait = async (videoId, paymentIntentId, suffix, label) => {
+      const payment = await checkout(videoId, label);
+      const delivered = await signedWebhookTo(completedEvent(payment, paymentIntentId, suffix));
+      expectStatus(delivered, 200, `M webhook ${label}`);
+      const purchase = await waitFor(() => prisma.purchase.findFirst({ where: { userId: buyer.id, videoId } }));
+      assert.ok(purchase, `M: nu s-a creat Purchase (${label})`);
+      const invoice = await waitFor(() => prisma.invoice.findFirst({ where: { purchaseId: purchase.id } }));
+      assert.ok(invoice, `M: nu s-a creat Invoice (${label})`);
+      return { payment, purchase, invoice };
+    };
+
+    const waitInvoice = async (id, check, label) => {
+      const invoice = await waitFor(
+        async () => {
+          const row = await prisma.invoice.findUnique({ where: { id } });
+          return row && check(row) ? row : null;
+        },
+        { timeoutMs: 45_000, intervalMs: 250 }
+      );
+      assert.ok(invoice, `M: ${label}`);
+      return invoice;
+    };
+
+    const emissionRequests = invoiceId =>
+      mock.requests.filter(
+        request => request.method === 'POST' && request.path === '/v2/facturi' && request.body?.id_extern === invoiceId
+      );
+
+    // --- 1. Billing is mandatory and the RO CUI must pass the control digit ---
+    const noBilling = await fgoApi('POST', `/api/payments/checkout/${videoMain.id}`, {
+      token: buyerToken,
+      body: { acceptedTerms: true },
+    });
+    expectStatus(noBilling, 400, 'M checkout fără billing');
+    assert.equal(noBilling.json?.error, 'INVALID_BILLING', 'M: checkout fără billing nu a răspuns INVALID_BILLING');
+
+    const invalidCui = await fgoApi('POST', `/api/payments/checkout/${videoMain.id}`, {
+      token: buyerToken,
+      body: { acceptedTerms: true, billing: { ...FGO_BILLING, cui: FGO_INVALID_CUI } },
+    });
+    expectStatus(invalidCui, 400, 'M checkout PJ cu CUI invalid');
+    assert.equal(invalidCui.json?.error, 'INVALID_BILLING', 'M: CUI invalid nu a fost respins cu INVALID_BILLING');
+    assert.ok(String(invalidCui.json?.message || '').includes('CUI'), 'M: mesajul pentru CUI invalid nu conține "CUI"');
+
+    // --- 2. First payment: the whole FGO flow, PDF, SPV, email, counter -------
+    const first = await payAndWait(videoMain.id, `${PI_INTENT}_fgo1`, 'fgo-completed-1', 'plata 1');
+
+    const emission = await waitFor(() => emissionRequests(first.invoice.id)[0] || null, { timeoutMs: 45_000, intervalMs: 250 });
+    assert.ok(emission, 'M: nu a fost trimisă nicio cerere POST /v2/facturi pentru prima factură');
+
+    assert.equal(emission.headers.authorization, `Bearer ${FGO_API_KEY}`, 'M: Authorization greșit pe POST /v2/facturi');
+    assert.equal(emission.headers['fgo-cod-unic'], FGO_COD_UNIC, 'M: Fgo-Cod-Unic greșit pe POST /v2/facturi');
+    assert.equal(emission.headers['fgo-url-platforma'], baseUrl, 'M: Fgo-Url-Platforma lipsește sau e greșit');
+
+    const emitted = emission.body || {};
+    assert.equal(emitted.serie, FGO_SERIES, 'M: body.serie greșit');
+    assert.equal(emitted.numar, '000124', `M: body.numar nu continuă FGO_LAST_NUMBER (${emitted.numar})`);
+    assert.equal(emitted.verificare_duplicat, true, 'M: body.verificare_duplicat nu e true');
+    assert.equal(emitted.id_extern, first.invoice.id, 'M: body.id_extern nu e id-ul facturii locale');
+
+    const article = (emitted.articole || [])[0] || {};
+    assert.ok(
+      Math.abs(Number(article.pret_total) - first.invoice.totalAmount.toNumber()) < 0.001,
+      `M: articole[0].pret_total (${article.pret_total}) nu egalează totalul facturii (${first.invoice.totalAmount})`
+    );
+    assert.equal(Number(article.cota_tva), first.invoice.taxRate.toNumber(), 'M: articole[0].cota_tva greșit');
+
+    const emittedClient = emitted.client || {};
+    assert.equal(emittedClient.tip, 'PJ', `M: client.tip e ${emittedClient.tip}`);
+    assert.equal(emittedClient.denumire, FGO_BILLING.name, 'M: client.denumire greșit');
+    assert.equal(emittedClient.cod_judet, FGO_BILLING.county, 'M: client.cod_judet greșit');
+    assert.equal(emittedClient.localitate, FGO_BILLING.city, 'M: client.localitate greșit');
+    assert.equal(emittedClient.adresa, FGO_BILLING.address, 'M: client.adresa greșită');
+    assert.equal(emittedClient.tara, FGO_BILLING.country, 'M: client.tara greșită');
+
+    const firstDone = await waitInvoice(
+      first.invoice.id,
+      invoice => invoice.fgoStatus === 'DONE',
+      'prima factură nu ajunge DONE'
+    );
+    assert.equal(firstDone.invoiceNumber, 'TST-000124', `M: invoiceNumber greșit (${firstDone.invoiceNumber})`);
+    assert.equal(firstDone.fgoPdfUrl, `${mock.url}/pdf/x`, 'M: fgoPdfUrl nu e linkul dat de mock');
+    assert.ok(firstDone.fgoPaidAt, 'M: încasarea nu a fost înregistrată (fgoPaidAt gol)');
+    assert.ok(firstDone.fgoSpvAt, 'M: factura nu a fost trimisă în SPV (fgoSpvAt gol)');
+    assert.ok(
+      mock.requests.some(request => request.method === 'POST' && request.path === '/v2/facturi/TST/000124/incasari'),
+      'M: POST .../incasari nu a fost apelat'
+    );
+    assert.ok(
+      mock.requests.some(request => request.method === 'POST' && request.path === '/v2/facturi/TST/000124/trimite-in-spv'),
+      'M: POST .../trimite-in-spv nu a fost apelat'
+    );
+
+    assert.ok(
+      mock.requests.some(request => request.method === 'GET' && request.path === '/pdf/x'),
+      'M: PDF-ul facturii nu a fost descărcat de la mock'
+    );
+    const invoiceMail = await waitFor(() => smtp.messages.find(message => message.includes('application/pdf')) || null, {
+      timeoutMs: 15_000,
+      intervalMs: 250,
+    });
+    assert.ok(invoiceMail, 'M: emailul trimis pe SMTP nu conține un atașament application/pdf');
+    assert.ok(invoiceMail.includes('Factura-TST-000124.pdf'), 'M: emailul nu are atașată factura TST-000124');
+
+    const settingsAfterFirst = await fgoApi('GET', '/api/admin/settings', { token: state.tokens.super });
+    expectStatus(settingsAfterFirst, 200, 'M GET setări după prima factură');
+    const lastNumberView = (settingsAfterFirst.json?.settings || []).find(view => view.key === 'FGO_LAST_NUMBER') || {};
+    assert.equal(lastNumberView.value, '000124', `M: FGO_LAST_NUMBER nu a avansat (${lastNumberView.value})`);
+
+    // --- A second payment continues the series ------------------------------
+    const second = await payAndWait(videoSecond.id, `${PI_INTENT}_fgo2`, 'fgo-completed-2', 'plata 2');
+    const secondEmission = await waitFor(() => emissionRequests(second.invoice.id)[0] || null, {
+      timeoutMs: 45_000,
+      intervalMs: 250,
+    });
+    assert.ok(secondEmission, 'M: a doua plată nu a produs o cerere de emitere');
+    assert.equal(secondEmission.body?.numar, '000125', `M: a doua factură a primit ${secondEmission.body?.numar}`);
+    const secondDone = await waitInvoice(
+      second.invoice.id,
+      invoice => invoice.fgoStatus === 'DONE',
+      'a doua factură nu ajunge DONE'
+    );
+    assert.equal(secondDone.invoiceNumber, 'TST-000125', `M: invoiceNumber greșit la a doua factură (${secondDone.invoiceNumber})`);
+
+    // --- 3. The same webhook delivered twice issues one invoice --------------
+    const paymentDouble = await checkout(videoDouble.id, 'livrare dublă');
+    const doubleEvent = completedEvent(paymentDouble, `${PI_INTENT}_fgo3`, 'fgo-completed-3');
+    const [deliveryOne, deliveryTwo] = await Promise.all([signedWebhookTo(doubleEvent), signedWebhookTo(doubleEvent)]);
+    expectStatus(deliveryOne, 200, 'M webhook livrare dublă #1');
+    expectStatus(deliveryTwo, 200, 'M webhook livrare dublă #2');
+    const deliveryStatuses = [deliveryOne.json?.status, deliveryTwo.json?.status];
+    assert.equal(
+      deliveryStatuses.filter(status => status === 'SUCCESS').length,
+      1,
+      `M: livrarea dublă a produs ${deliveryStatuses.join(' + ')}`
+    );
+
+    const doublePurchase = await waitFor(() =>
+      prisma.purchase.findFirst({ where: { userId: buyer.id, videoId: videoDouble.id } })
+    );
+    assert.ok(doublePurchase, 'M: livrarea dublă nu a creat Purchase');
+    const doubleInvoice = await prisma.invoice.findFirst({ where: { purchaseId: doublePurchase.id } });
+    assert.ok(doubleInvoice, 'M: livrarea dublă nu a creat Invoice');
+    await waitInvoice(doubleInvoice.id, invoice => invoice.fgoStatus === 'DONE', 'factura livrării duble nu ajunge DONE');
+    assert.equal(
+      emissionRequests(doubleInvoice.id).length,
+      1,
+      `M: livrarea dublă a produs ${emissionRequests(doubleInvoice.id).length} cereri de emitere`
+    );
+
+    // --- 4. 500 → PENDING with the error, then retry adopts the FGO number ----
+    mock.mode = 'error500';
+    const errorRun = await payAndWait(videoError.id, `${PI_INTENT}_fgo4`, 'fgo-completed-4', 'plata cu 500');
+    const stillPending = await waitInvoice(
+      errorRun.invoice.id,
+      invoice => invoice.fgoAttempts >= 1,
+      'factura cu 500 nu a înregistrat nicio încercare'
+    );
+    assert.equal(stillPending.fgoStatus, 'PENDING', `M: după 500 factura are fgoStatus ${stillPending.fgoStatus}`);
+    assert.equal(stillPending.fgoAttempts, 1, `M: fgoAttempts e ${stillPending.fgoAttempts} după 500`);
+    assert.ok(stillPending.fgoError, 'M: fgoError lipsește după 500');
+    assert.ok(stillPending.fgoNextAttemptAt, 'M: fgoNextAttemptAt lipsește după 500');
+
+    mock.mode = 'duplicate';
+    const errorRetry = await fgoApi('POST', `/api/admin/invoices/${errorRun.invoice.id}/retry`, {
+      token: state.tokens.admin,
+    });
+    expectStatus(errorRetry, 200, 'M retry după 500');
+    const adopted = await waitInvoice(
+      errorRun.invoice.id,
+      invoice => invoice.fgoStatus === 'DONE',
+      'factura nu ajunge DONE după factura_duplicata'
+    );
+    assert.equal(adopted.fgoSerie, FGO_DUPLICATE.serie, `M: seria adoptată e ${adopted.fgoSerie}`);
+    assert.equal(adopted.fgoNumar, FGO_DUPLICATE.numar, `M: numărul adoptat e ${adopted.fgoNumar}`);
+    assert.equal(
+      adopted.invoiceNumber,
+      `${FGO_DUPLICATE.serie}-${FGO_DUPLICATE.numar}`,
+      'M: invoiceNumber nu a preluat seria și numărul din factura_duplicata'
+    );
+
+    // --- 5. Validation error → FAILED, visible in the admin list, retry fixes it
+    mock.mode = 'validation';
+    const invalid = await payAndWait(videoValidation.id, `${PI_INTENT}_fgo5`, 'fgo-completed-5', 'plata cu validare');
+    const failed = await waitInvoice(
+      invalid.invoice.id,
+      invoice => invoice.fgoStatus === 'FAILED',
+      'factura respinsă la validare nu ajunge FAILED'
+    );
+    assert.ok(
+      String(failed.fgoError || '').includes(FGO_VALIDATION_MESSAGE),
+      `M: fgoError nu conține mesajul de validare (${failed.fgoError})`
+    );
+
+    const invoicesList = await fgoApi('GET', '/api/admin/invoices', { token: state.tokens.admin });
+    expectStatus(invoicesList, 200, 'M GET /api/admin/invoices');
+    assert.ok(Number(invoicesList.json?.failedCount) >= 1, `M: failedCount e ${invoicesList.json?.failedCount}`);
+    assert.ok(
+      (invoicesList.json?.items || []).some(item => item.id === invalid.invoice.id && item.fgoStatus === 'FAILED'),
+      'M: factura FAILED nu apare în GET /api/admin/invoices'
+    );
+
+    mock.mode = 'ok';
+    const repairRetry = await fgoApi('POST', `/api/admin/invoices/${invalid.invoice.id}/retry`, {
+      token: state.tokens.admin,
+    });
+    expectStatus(repairRetry, 200, 'M retry după validare');
+    const repaired = await waitInvoice(
+      invalid.invoice.id,
+      invoice => invoice.fgoStatus === 'DONE',
+      'factura nu ajunge DONE după reparare'
+    );
+    assert.ok(
+      String(repaired.invoiceNumber || '').startsWith(`${FGO_SERIES}-`),
+      `M: invoiceNumber greșit după reparare (${repaired.invoiceNumber})`
+    );
+
+    // --- 6. Full refund → storno once; a dispute never asks for a storno ------
+    const refund = await signedWebhookTo(
+      eventOf(
+        'charge.refunded',
+        {
+          id: `${PREFIX}-charge-fgo-1`,
+          object: 'charge',
+          refunded: true,
+          amount: 1000,
+          currency: 'eur',
+          payment_intent: `${PI_INTENT}_fgo1`,
+        },
+        'fgo-refund-1'
+      )
+    );
+    expectStatus(refund, 200, 'M webhook charge.refunded');
+    assert.equal(refund.json?.status, 'REVOKED', `M: refund a răspuns ${refund.json?.status}`);
+
+    const stornoDone = await waitInvoice(
+      first.invoice.id,
+      invoice => Boolean(invoice.fgoStornoDoneAt) && invoice.fgoStatus === 'DONE',
+      'stornarea primei facturi nu a fost emisă'
+    );
+    assert.equal(stornoDone.fgoStornoSerie, FGO_STORNO_SERIES, `M: seria storno e ${stornoDone.fgoStornoSerie}`);
+    assert.equal(
+      mock.requests.filter(request => request.method === 'POST' && request.path === '/v2/facturi/TST/000124/storneaza')
+        .length,
+      1,
+      'M: POST .../storneaza nu a fost apelat exact o dată'
+    );
+
+    const stornoEmail = await waitFor(() =>
+      prisma.emailLog.findFirst({ where: { to: FGO_BUYER_EMAIL, type: 'FGO_STORNO' }, orderBy: { sentAt: 'desc' } })
+    );
+    assert.ok(stornoEmail, 'M: lipsește EmailLog-ul FGO_STORNO');
+    assert.equal(stornoEmail.status, 'SENT', `M: emailul storno are status ${stornoEmail.status}`);
+
+    const dispute = await signedWebhookTo(
+      eventOf(
+        'charge.dispute.created',
+        {
+          id: `${PREFIX}-dispute-fgo-1`,
+          object: 'dispute',
+          status: 'needs_response',
+          payment_intent: `${PI_INTENT}_fgo2`,
+        },
+        'fgo-dispute-1'
+      )
+    );
+    expectStatus(dispute, 200, 'M webhook charge.dispute.created');
+    assert.equal(dispute.json?.status, 'REVOKED', `M: disputa a răspuns ${dispute.json?.status}`);
+
+    const disputed = await waitFor(async () => {
+      const row = await prisma.invoice.findUnique({ where: { id: second.invoice.id } });
+      return row && row.status === 'REFUNDED' ? row : null;
+    });
+    assert.ok(disputed, 'M: factura celei de-a doua plăți nu a fost marcată REFUNDED după dispută');
+    assert.equal(disputed.fgoStornoWanted, false, 'M: disputa a cerut storno (fgoStornoWanted true)');
+    assert.ok(
+      !mock.requests.some(request => request.method === 'POST' && request.path === '/v2/facturi/TST/000125/storneaza'),
+      'M: storneaza a fost apelat pentru o plată cu dispută'
+    );
+
+    // --- 7. The FGO errors stay on the server side ---------------------------
+    const purchases = await fgoApi('GET', '/api/account/purchases', { token: buyerToken });
+    expectStatus(purchases, 200, 'M GET /api/account/purchases');
+    assert.ok(!purchases.text.includes('fgoError'), 'M: /api/account/purchases conține fgoError');
+    assert.ok(!purchases.text.includes('fgoWarning'), 'M: /api/account/purchases conține fgoWarning');
+
+    const settingsResponse = await fgoApi('GET', '/api/admin/settings', { token: state.tokens.super });
+    expectStatus(settingsResponse, 200, 'M GET /api/admin/settings');
+    assert.ok(!settingsResponse.text.includes(FGO_API_KEY), 'M: GET /api/admin/settings întoarce cheia FGO în clar');
+    const apiKeyView = (settingsResponse.json?.settings || []).find(view => view.key === 'FGO_API_KEY') || {};
+    assert.equal(apiKeyView.value, null, 'M: GET /api/admin/settings întoarce valoarea cheii FGO');
+
+    // --- 8. isValidRoCui, checked against the algorithm itself --------------
+    const cuiControlKey = '753217532';
+    const cuiValid = candidate => {
+      const digits = String(candidate);
+      if (!/^\d{2,10}$/.test(digits)) return false;
+      const body = digits.slice(0, -1);
+      let sum = 0;
+      for (let i = 0; i < body.length; i++) {
+        sum += Number(body[i]) * Number(cuiControlKey[cuiControlKey.length - body.length + i]);
+      }
+      const control = (sum * 10) % 11;
+      return (control === 10 ? 0 : control) === Number(digits.slice(-1));
+    };
+
+    const billingModule = await import(new URL('../src/types/billing.ts', import.meta.url).href);
+    assert.equal(typeof billingModule.isValidRoCui, 'function', 'M: src/types/billing.ts nu exportă isValidRoCui');
+
+    assert.equal(
+      billingModule.isValidRoCui(FGO_VALID_CUI),
+      cuiValid(FGO_VALID_CUI),
+      `M: isValidRoCui(${FGO_VALID_CUI}) diferă de algoritmul de control`
+    );
+    assert.equal(
+      billingModule.isValidRoCui(FGO_VALID_CUI),
+      true,
+      `M: ${FGO_VALID_CUI} ar trebui să fie un CUI valid`
+    );
+    assert.equal(billingModule.isValidRoCui(FGO_INVALID_CUI), false, `M: ${FGO_INVALID_CUI} e acceptat ca CUI valid`);
+
+    // A CUI computed here with the same algorithm, so the check does not only rest on the sample above
+    const computedBody = '2468135';
+    let computedSum = 0;
+    for (let i = 0; i < computedBody.length; i++) {
+      computedSum += Number(computedBody[i]) * Number(cuiControlKey[cuiControlKey.length - computedBody.length + i]);
+    }
+    const computedControl = (computedSum * 10) % 11;
+    const computedCui = `${computedBody}${computedControl === 10 ? 0 : computedControl}`;
+    assert.equal(cuiValid(computedCui), true, 'M: CUI-ul calculat în test nu trece algoritmul local');
+    assert.equal(billingModule.isValidRoCui(computedCui), true, `M: isValidRoCui(${computedCui}) respinge un CUI valid`);
+    const brokenCui = `${computedCui.slice(0, -1)}${(Number(computedCui.slice(-1)) + 1) % 10}`;
+    assert.equal(billingModule.isValidRoCui(brokenCui), false, `M: isValidRoCui(${brokenCui}) acceptă altă cifră de control`);
+  });
 } finally {
-  // Settings first (through the API, so the server reloads the env values), then the DB rows
+  // The case M server process and its mocks first, then the settings (through the API, so the
+  // main server reloads the env values), then the DB rows
+  await stopFgoHarness();
   await restoreSettings();
   await cleanup();
 
