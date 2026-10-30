@@ -76,6 +76,17 @@ const PI_INTENT = `pi_smoke_${RAND}`;
 const PI_INTENT_G1 = `pi_smoke_${RAND}_g1`;
 const PI_INTENT_G2 = `pi_smoke_${RAND}_g2`;
 
+// The server validates the billing details before the consent, so every checkout call
+// that wants a different failure reason still has to send valid billing data.
+const CHECKOUT_BILLING = {
+  type: 'PF',
+  name: `${PREFIX} Cumparator PF`,
+  country: 'RO',
+  county: 'B',
+  city: 'București',
+  address: 'Str. Testului nr. 1, sector 1',
+};
+
 const state = {
   ids: {},
   tokens: {},
@@ -962,15 +973,24 @@ try {
     const videoId = state.ids.video;
     assert.ok(videoId, 'C: lipsește videoclipul din seed');
 
-    const noTerms = await api('POST', `/api/payments/checkout/${videoId}`, { token: state.tokens.buyer, body: {} });
+    const noTerms = await api('POST', `/api/payments/checkout/${videoId}`, {
+      token: state.tokens.buyer,
+      body: { billing: CHECKOUT_BILLING },
+    });
     expectStatus(noTerms, 400, 'C checkout fără acceptedTerms');
     assert.equal(noTerms.json?.error, 'TERMS_NOT_ACCEPTED', 'C: motiv greșit pentru lipsa termenilor');
 
     await avoidMinuteBoundary();
 
     const [first, second] = await Promise.all([
-      api('POST', `/api/payments/checkout/${videoId}`, { token: state.tokens.buyer, body: { acceptedTerms: true } }),
-      api('POST', `/api/payments/checkout/${videoId}`, { token: state.tokens.buyer, body: { acceptedTerms: true } }),
+      api('POST', `/api/payments/checkout/${videoId}`, {
+        token: state.tokens.buyer,
+        body: { acceptedTerms: true, billing: CHECKOUT_BILLING },
+      }),
+      api('POST', `/api/payments/checkout/${videoId}`, {
+        token: state.tokens.buyer,
+        body: { acceptedTerms: true, billing: CHECKOUT_BILLING },
+      }),
     ]);
     expectStatus(first, 200, 'C checkout #1');
     expectStatus(second, 200, 'C checkout #2');
@@ -985,7 +1005,10 @@ try {
     state.ids.checkoutSession = payments[0].checkoutSessionId;
     state.stripeSessionIds.push(payments[0].checkoutSessionId);
 
-    const third = await api('POST', `/api/payments/checkout/${videoId}`, { token: state.tokens.buyer, body: { acceptedTerms: true } });
+    const third = await api('POST', `/api/payments/checkout/${videoId}`, {
+      token: state.tokens.buyer,
+      body: { acceptedTerms: true, billing: CHECKOUT_BILLING },
+    });
     expectStatus(third, 200, 'C checkout #3');
     assert.equal(third.json?.checkoutUrl, first.json?.checkoutUrl, 'C: al treilea POST a creat altă sesiune');
     assert.equal(
@@ -1061,7 +1084,7 @@ try {
 
     const reCheckout = await api('POST', `/api/payments/checkout/${state.ids.video}`, {
       token: state.tokens.buyer,
-      body: { acceptedTerms: true },
+      body: { acceptedTerms: true, billing: CHECKOUT_BILLING },
     });
     expectStatus(reCheckout, 400, 'D re-checkout');
     assert.equal(reCheckout.json?.error, 'ALREADY_PURCHASED', 'D: re-checkout nu a fost refuzat cu ALREADY_PURCHASED');
