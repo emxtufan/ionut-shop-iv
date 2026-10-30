@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import { securityHeaders } from './src/server/middlewares/security-headers.middleware.ts';
 import { authenticate, optionalAuthenticate, requireRole } from './src/server/middlewares/auth.middleware.ts';
 import { createRateLimiter } from './src/server/modules/security/rate-limiter.ts';
+import { validateBilling } from './src/types/billing.ts';
 
 import { AuthController } from './src/server/modules/auth/auth.controller.ts';
 import { AuthService } from './src/server/modules/auth/auth.service.ts';
@@ -112,6 +113,7 @@ app.get('/api/videos', optionalAuthenticate, ah(VideosController.getVideos));
 app.get('/api/videos/:id', optionalAuthenticate, ah(VideosController.getVideoById));
 app.get('/api/library', authenticate, ah(VideosController.getLibrary));
 app.get('/api/account/purchases', authenticate, ah(VideosController.getPurchases));
+app.get('/api/account/billing', authenticate, ah(VideosController.getBilling));
 app.post('/api/account/change-password', authenticate, authLimiter, ah(AuthController.changePassword));
 
 // Printable invoice (opens a print-ready page)
@@ -125,6 +127,10 @@ app.get('/api/account/invoices/:id/print', authenticate, ah(async (req: Request,
   if (invoice.userId !== user.id && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') {
     return res.status(403).send('Acces interzis');
   }
+
+  // The PDF issued by FGO wins; while it is still being generated there is nothing to print yet
+  if (invoice.fgoPdfUrl) return res.redirect(302, invoice.fgoPdfUrl);
+  if (invoice.fgoStatus) return res.status(404).send('Factura se generează');
 
   const html = EmailService.renderInvoiceHtml(invoice, invoice.purchase.video.title);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -171,10 +177,16 @@ app.get('/api/payments/config', (req: Request, res: Response) => {
 });
 
 app.post('/api/payments/checkout/:videoId', authenticate, async (req: Request, res: Response) => {
+  const billing = validateBilling(req.body?.billing);
+  if (!billing.ok) {
+    return res.status(400).json({ error: 'INVALID_BILLING', message: billing.error });
+  }
+
   try {
     const result = await PaymentsService.createCheckoutSession({
       userId: (req as any).user.id,
       videoId: req.params.videoId,
+      billing: billing.value,
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'Unknown',
       acceptedTerms: req.body?.acceptedTerms,

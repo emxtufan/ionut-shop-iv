@@ -505,8 +505,9 @@ export class AuthService {
       exportedAt: new Date().toISOString(),
       profile,
       purchases,
+      // Billing details stay on the payments (they are the buyer's own data), FGO internals do not travel
       payments,
-      invoices,
+      invoices: invoices.map(({ fgoError, fgoWarning, ...invoice }) => invoice),
       entitlements,
       sessions,
       playbackSessions,
@@ -550,6 +551,22 @@ export class AuthService {
       await tx.auditLog.updateMany({
         where: { userId: user.id },
         data: { ip: 'anonimizat', userAgent: 'anonimizat', device: null, metadata: Prisma.DbNull },
+      });
+
+      // Billing details are erased from the payments that carry no invoice: only the invoiced ones keep them
+      const invoicedPayments = await tx.invoice.findMany({
+        where: { userId: user.id },
+        select: { purchase: { select: { paymentId: true } } },
+      });
+      const invoicedPaymentIds = invoicedPayments
+        .map(item => item.purchase.paymentId)
+        .filter((id): id is string => Boolean(id));
+      await tx.payment.updateMany({
+        where: {
+          userId: user.id,
+          ...(invoicedPaymentIds.length ? { id: { notIn: invoicedPaymentIds } } : {}),
+        },
+        data: { billing: Prisma.DbNull },
       });
 
       await tx.user.update({

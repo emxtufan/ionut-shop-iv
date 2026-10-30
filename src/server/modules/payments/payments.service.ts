@@ -493,7 +493,11 @@ export class PaymentsService {
       return { purchase: payment.purchase, stornoWanted };
     });
 
-    if (!purchase) return { status: 'PAYMENT_NOT_FOUND' };
+    if (!revoked) return { status: 'PAYMENT_NOT_FOUND' };
+    const { purchase, stornoWanted } = revoked;
+
+    // Only a refund of a fiscally invoiced purchase needs the storno: wake the FGO queue up for it
+    if (stornoWanted) FgoService.kick();
 
     AuditService.logEvent({
       eventType: 'REFUND_CREATED',

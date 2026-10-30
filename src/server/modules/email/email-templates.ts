@@ -54,6 +54,7 @@ export interface InvoiceEmailData {
   paymentMethod: string;
   stripePaymentIntentId?: string | null;
   issuedAt: string;
+  status?: string | null;
   appUrl: string;
 }
 
@@ -353,6 +354,7 @@ export function generatePurchaseEmail(data: PurchaseEmailData): { subject: strin
 export function generateStripeInvoiceEmail(data: InvoiceEmailData): { subject: string; html: string; text: string } {
   const subject = `Factură Fiscală #${data.invoiceNumber} — ${company.name}`;
   const vatPercent = Math.round(data.taxRate * 10000) / 100;
+  const statusBadge = data.status === 'REFUNDED' ? 'STORNATĂ' : 'ACHITAT';
 
   const body = `
     <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px;">
@@ -363,7 +365,7 @@ export function generateStripeInvoiceEmail(data: InvoiceEmailData): { subject: s
       </div>
       <div style="text-align: right;">
         <span style="display: inline-block; padding: 4px 10px; background-color: rgba(63, 107, 53, 0.12); border: 1px solid rgba(63, 107, 53, 0.3); color: #3f6b35; border-radius: 6px; font-size: 12px; font-weight: 700;">
-          ACHITAT
+          ${statusBadge}
         </span>
       </div>
     </div>

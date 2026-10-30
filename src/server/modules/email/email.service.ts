@@ -258,6 +258,7 @@ export class EmailService {
       paymentMethod: 'Card Bancar (Stripe Checkout)',
       stripePaymentIntentId: invoice.stripePaymentIntentId,
       issuedAt: formatDateRo(invoice.issuedAt),
+      status: invoice.status,
       appUrl: config.appUrl,
     });
 
@@ -297,6 +298,7 @@ export class EmailService {
       paymentMethod: 'Card Bancar (Stripe)',
       stripePaymentIntentId: invoice.stripePaymentIntentId,
       issuedAt: formatDateRo(invoice.issuedAt),
+      status: invoice.status,
       appUrl: config.appUrl,
     }).html;
   }
