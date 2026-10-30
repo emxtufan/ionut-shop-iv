@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Input, Switch, Tag, Button, Popconfirm, Alert, message } from 'antd';
 import { ChangePasswordForm } from '../components/ChangePasswordForm.tsx';
 
-type TestKey = 'bunny' | 'stripe' | 'smtp';
+type TestKey = 'bunny' | 'stripe' | 'smtp' | 'fgo';
 type LaunchState = 'ok' | 'fail' | 'pending';
 
 interface SettingView {
@@ -54,12 +54,14 @@ const TEST_URLS: Record<TestKey, string> = {
   bunny: '/api/admin/settings/test/bunny',
   stripe: '/api/admin/settings/test/stripe',
   smtp: '/api/admin/settings/test/smtp',
+  fgo: '/api/admin/settings/test/fgo',
 };
 
 const TEST_LABELS: Record<TestKey, string> = {
   bunny: 'Testează Bunny',
   stripe: 'Testează Stripe',
   smtp: 'Testează emailul',
+  fgo: 'FGO',
 };
 
 const CARDS: CardDef[] = [
@@ -167,6 +169,7 @@ const CARDS: CardDef[] = [
       { key: 'FGO_UM', label: 'Unitate de măsură', placeholder: 'buc' },
       { key: 'FGO_SEND_SPV', label: 'Trimite factura în SPV', type: 'switch' },
     ],
+    test: 'fgo',
   },
 ];
 
@@ -276,7 +279,7 @@ export const AdminSettingsTab: React.FC = () => {
     }
   };
 
-  const runAllTests = () => Promise.all([runTest('bunny'), runTest('stripe'), runTest('smtp')]);
+  const runAllTests = () => Promise.all([runTest('bunny'), runTest('stripe'), runTest('smtp'), runTest('fgo')]);
 
   useEffect(() => {
     const boot = async () => {
@@ -452,6 +455,7 @@ export const AdminSettingsTab: React.FC = () => {
   const renderTestResult = (key: TestKey) => {
     const result = tests[key];
     if (!result) return null;
+    const missingRights = Array.isArray(result.details?.lipsa) ? (result.details.lipsa as string[]) : [];
     return (
       <Alert
         type={result.ok ? 'success' : 'error'}
@@ -459,9 +463,14 @@ export const AdminSettingsTab: React.FC = () => {
         message={result.message}
         description={
           result.details ? (
-            <pre className="text-[11px] whitespace-pre-wrap break-all m-0">
-              {JSON.stringify(result.details, null, 2)}
-            </pre>
+            <div className="space-y-1">
+              {missingRights.length > 0 && (
+                <div className="text-[11px]">Drepturi lipsă: {missingRights.join(', ')}</div>
+              )}
+              <pre className="text-[11px] whitespace-pre-wrap break-all m-0">
+                {JSON.stringify(result.details, null, 2)}
+              </pre>
+            </div>
           ) : undefined
         }
       />

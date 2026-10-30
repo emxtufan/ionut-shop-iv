@@ -13,12 +13,15 @@ import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
 import { AuthService } from '../auth/auth.service.ts';
 import { BunnyService, syncProcessingVideos } from '../bunny/bunny.service.ts';
+import { FgoService } from '../fgo/fgo.service.ts';
 
 export const THUMBNAILS_DIR = path.join(config.uploadDir, 'thumbnails');
 
 const VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.webm', '.mov'];
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
 const USERS_PAGE_SIZE = 50;
+const INVOICES_PAGE_SIZE = 20;
+const INVOICE_FGO_FILTERS = ['FAILED', 'PENDING', 'DONE', 'NONE'];
 
 function slugify(text: string): string {
   return text
@@ -147,6 +150,121 @@ export class AdminController {
       take: 500,
     });
     return res.json({ purchases });
+  }
+
+  /**
+   * Invoices (FGO) - Paginated list (20 per page, newest first), optional fgoStatus filter.
+   * Returns every invoice field; no relations are loaded.
+   */
+  public static async getInvoices(req: Request, res: Response) {
+    const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
+    const status = String(req.query.status || '').trim().toUpperCase();
+
+    if (status && status !== 'ALL' && !INVOICE_FGO_FILTERS.includes(status)) {
+      return res.status(400).json({
+        error: 'INVALID_STATUS',
+        message: `Statusul poate fi ${INVOICE_FGO_FILTERS.join(', ')}.`,
+      });
+    }
+
+    const where = status === 'NONE' ? { fgoStatus: null } : status && status !== 'ALL' ? { fgoStatus: status } : {};
+
+    const [items, total, failedCount] = await Promise.all([
+      db.invoice.findMany({
+        where,
+        orderBy: { seq: 'desc' },
+        skip: (page - 1) * INVOICES_PAGE_SIZE,
+        take: INVOICES_PAGE_SIZE,
+      }),
+      db.invoice.count({ where }),
+      db.invoice.count({ where: { fgoStatus: 'FAILED' } }),
+    ]);
+
+    return res.json({ items, total, failedCount });
+  }
+
+  /**
+   * Invoices - Put a failed invoice back at the head of the FGO queue
+   */
+  public static async retryInvoice(req: Request, res: Response) {
+    const invoice = await db.invoice.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, userId: true },
+    });
+    if (!invoice) return res.status(404).json({ error: 'INVOICE_NOT_FOUND', message: 'Factura nu a fost găsită.' });
+
+    try {
+      await FgoService.retry(invoice.id);
+    } catch (err: any) {
+      return res.status(400).json({ error: 'INVOICE_RETRY_FAILED', message: err.message || 'Reîncercarea facturii a eșuat.' });
+    }
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_RETRIED_INVOICE',
+      severity: 'WARNING',
+      userId: invoice.userId,
+      ...auditContext(req),
+      metadata: { invoiceId: invoice.id },
+    });
+
+    return res.json({ success: true, message: 'Factura a fost reprogramată pentru emitere.' });
+  }
+
+  /**
+   * Invoices - Send the invoice email again (with the PDF when FGO still serves it)
+   */
+  public static async resendInvoiceEmail(req: Request, res: Response) {
+    const invoice = await db.invoice.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, userId: true },
+    });
+    if (!invoice) return res.status(404).json({ error: 'INVOICE_NOT_FOUND', message: 'Factura nu a fost găsită.' });
+
+    let sent: boolean;
+    try {
+      sent = await FgoService.resendEmail(invoice.id);
+    } catch (err: any) {
+      return res.status(400).json({ error: 'INVOICE_EMAIL_FAILED', message: err.message || 'Trimiterea emailului a eșuat.' });
+    }
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_RESENT_INVOICE_EMAIL',
+      ...auditContext(req),
+      metadata: { invoiceId: invoice.id },
+    });
+
+    if (!sent) {
+      return res.status(502).json({ error: 'EMAIL_SEND_FAILED', message: 'Emailul cu factura nu a putut fi trimis.' });
+    }
+
+    return res.json({ success: true, message: 'Emailul cu factura a fost retrimis.' });
+  }
+
+  /**
+   * Invoices - Ask FGO for a storno (the queue issues it on the next run)
+   */
+  public static async requestInvoiceStorno(req: Request, res: Response) {
+    const invoice = await db.invoice.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, userId: true },
+    });
+    if (!invoice) return res.status(404).json({ error: 'INVOICE_NOT_FOUND', message: 'Factura nu a fost găsită.' });
+
+    try {
+      await FgoService.requestStorno(invoice.id);
+    } catch (err: any) {
+      return res.status(400).json({ error: 'INVOICE_STORNO_FAILED', message: err.message || 'Stornarea facturii a eșuat.' });
+    }
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_REQUESTED_INVOICE_STORNO',
+      severity: 'WARNING',
+      userId: invoice.userId,
+      ...auditContext(req),
+      metadata: { invoiceId: invoice.id },
+    });
+
+    return res.json({ success: true, message: 'Stornarea a fost programată.' });
   }
 
   /**
