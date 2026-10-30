@@ -74,6 +74,18 @@ app.get('/api/health', ah(async (req: Request, res: Response) => {
 }));
 
 // -----------------------------------------------------------------------------
+// Public company details (legal pages, footer). No authentication.
+// -----------------------------------------------------------------------------
+app.get('/api/public/company', (req: Request, res: Response) => {
+  return res.json({
+    name: config.company.name,
+    cif: config.company.cif,
+    address: config.company.address,
+    email: config.company.email,
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Auth
 // -----------------------------------------------------------------------------
 app.post('/api/auth/register', authLimiter, ah(AuthController.register));

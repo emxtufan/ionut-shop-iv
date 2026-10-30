@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ConfigProvider, notification } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
 import { brandTheme } from './client/theme.ts';
 import { AuthProvider, useAuth } from './client/context/AuthContext.tsx';
 import { Navbar } from './client/components/Navbar.tsx';
@@ -7,17 +8,68 @@ import { CatalogPage } from './client/pages/CatalogPage.tsx';
 import { LibraryPage } from './client/pages/LibraryPage.tsx';
 import { PurchasesPage } from './client/pages/PurchasesPage.tsx';
 import { AdminDashboardPage } from './client/pages/AdminDashboardPage.tsx';
+import { LegalPage, type CompanyInfo, type LegalPageKey } from './client/pages/LegalPage.tsx';
 import { SecurePlayer } from './client/components/SecurePlayer.tsx';
 import { CheckoutModal } from './client/components/CheckoutModal.tsx';
 import { AuthModal } from './client/components/AuthModal.tsx';
 import { ResetPasswordModal } from './client/components/ResetPasswordModal.tsx';
 import { Video } from './types/index.ts';
 
+// ?page=terms|privacy|cookies renders a legal page instead of the main content
+function readLegalPage(): LegalPageKey | null {
+  const page = new URLSearchParams(window.location.search).get('page');
+  return page === 'terms' || page === 'privacy' || page === 'cookies' ? page : null;
+}
+
+function SiteFooter() {
+  const [company, setCompany] = useState<CompanyInfo | null>(null);
+
+  useEffect(() => {
+    fetch('/api/public/company')
+      .then((res) => res.json())
+      .then((data: CompanyInfo) => setCompany(data))
+      .catch((e) => console.error(e));
+  }, []);
+
+  const linkClass = 'hover:text-ink transition-colors';
+
+  return (
+    <footer className="border-t border-ink/10">
+      <div className="max-w-7xl mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-muted">
+        <nav className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+          <a href="/?page=terms" className={linkClass}>
+            Termeni
+          </a>
+          <a href="/?page=privacy" className={linkClass}>
+            Confidențialitate
+          </a>
+          <a href="/?page=cookies" className={linkClass}>
+            Cookies
+          </a>
+          <a
+            href="https://anpc.ro/ce-este-sal/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={linkClass}
+          >
+            ANPC SAL
+          </a>
+        </nav>
+        <span className="text-center sm:text-right">
+          © {new Date().getFullYear()} {company?.name || '…'}
+          {company?.cif ? ` · CIF ${company.cif}` : ''}
+        </span>
+      </div>
+    </footer>
+  );
+}
+
 function AppContent() {
   const { user } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('catalog');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isAdminMode, setIsAdminMode] = useState<boolean>(false);
+  const [legalPage, setLegalPage] = useState<LegalPageKey | null>(() => readLegalPage());
 
   // Modals
   const [activeWatchVideo, setActiveWatchVideo] = useState<Video | null>(null);
@@ -118,6 +170,11 @@ function AppContent() {
         onTabChange={(tab) => {
           setIsAdminMode(false);
           setCurrentTab(tab);
+          // Leaving a legal page (?page=...) goes back to the catalog
+          if (legalPage) {
+            window.history.replaceState({}, '', '/');
+            setLegalPage(null);
+          }
         }}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -129,7 +186,20 @@ function AppContent() {
 
       {/* Main Content Area (No Desktop Sidebar in Client Mode) */}
       <main className="flex-1 w-full pb-16">
-        {isAdminMode ? (
+        {legalPage ? (
+          <>
+            <div className="max-w-3xl mx-auto px-6 pt-8">
+              <a
+                href="/"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-ink transition-colors"
+              >
+                <ArrowLeftOutlined className="text-[10px]" />
+                Înapoi la catalog
+              </a>
+            </div>
+            <LegalPage page={legalPage} />
+          </>
+        ) : isAdminMode ? (
           <AdminDashboardPage onExitAdmin={() => setIsAdminMode(false)} />
         ) : (
           <>
@@ -152,6 +222,9 @@ function AppContent() {
           </>
         )}
       </main>
+
+      {/* Footer on all content pages, hidden in admin and under the player overlay */}
+      {!isAdminMode && !activeWatchVideo && <SiteFooter />}
 
       {/* Active Secure Video Player View */}
       {activeWatchVideo && (
