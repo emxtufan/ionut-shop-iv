@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+/* IV Concept brand palette (taken from ivconcept.ro) */
+@theme {
+  --color-sand: #e8e0d6;      /* page background */
+  --color-cream: #f8f3ec;     /* cards, panels, modals */
+  --color-ink: #2c2218;       /* text, primary buttons */
+  --color-ink-soft: #433223;  /* primary button hover */
+  --color-muted: #8b6847;     /* secondary text */
+  --color-gold: #b38b60;      /* accents */
+  --color-gold-light: #c5a880;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Inter", sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-sand);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(44, 34, 24, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(44, 34, 24, 0.35);
+}
+
+/* Ant Design modal & drawer subtle borders */
+.ant-modal-content {
+  border: 1px solid rgba(44, 34, 24, 0.1) !important;
+  box-shadow: 0 30px 60px -15px rgba(44, 34, 24, 0.35) !important;
+}
+.ant-drawer-content {
+  border-left: 1px solid rgba(44, 34, 24, 0.1) !important;
+}

@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "graphify hook-guard search",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "graphify hook-guard read",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\\\Program Files\\\\nodejs\\\\node.exe\" \"C:\\\\AiTools\\\\boss-worker\\\\map\\\\build-map.mjs\" \"C:\\\\Users\\\\Asus\\\\Desktop\\\\ProiectIonutTufanPlata\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "deepseek-worker"
+  ],
+  "permissions": {
+    "deny": [
+      "Edit",
+      "Write",
+      "NotebookEdit"
+    ]
+  }
+}

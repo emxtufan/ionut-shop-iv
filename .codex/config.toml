@@ -1,0 +1,6 @@
+[mcp_servers.deepseek-worker]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\AiTools\boss-worker\worker\server.mjs']
+
+[mcp_servers.deepseek-worker.env]
+PROJECT_ROOT = 'C:\Users\Asus\Desktop\ProiectIonutTufanPlata'

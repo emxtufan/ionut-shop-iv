@@ -1,0 +1,6 @@
+{
+  "name": "IV Concept",
+  "description": "Platformă VOD pentru vânzarea de filme cu acces permanent: plăți Stripe, redare protejată prin Bunny Stream (MediaCage DRM), facturi automate și panou de administrare.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
