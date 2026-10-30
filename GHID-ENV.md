@@ -48,7 +48,7 @@ Intră cu contul de admin → **Setări**. Doar contul `SUPER_ADMIN` are acces; 
 - La **Allowed Domains** pui domeniul site-ului tău: fără `https://`, exact, inclusiv `www` dacă site-ul e accesat cu `www`. Adaugă și `localhost` cât testezi local, apoi scoate-l.
 - Bifezi **Block Direct URL File Access**. Token authentication pentru embed trebuie să fie activ.
 
-Linkul playerului copiat din Bunny expiră în 10 minute.
+Un link de player copiat de pe site expiră în 10 minute.
 
 Când creezi biblioteca: alege regiunile de stocare cele mai apropiate de clienți (Europa). Rezoluțiile implicite sunt în regulă.
 

@@ -105,7 +105,7 @@ export class PlaybackService {
 
     // 4. New playback session + signed Bunny embed URL, valid for the length of the film plus one hour
     const jti = crypto.randomBytes(16).toString('hex');
-    const expires = Math.floor(Date.now() / 1000) + video.durationSeconds + 3600;
+    const expires = Math.floor(Date.now() / 1000) + PLAYBACK_TOKEN_TTL_SECONDS;
 
     const playbackSession = await db.playbackSession.create({
       data: {
