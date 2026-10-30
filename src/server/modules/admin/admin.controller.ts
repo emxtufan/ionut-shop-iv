@@ -11,12 +11,14 @@ import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
+import { AuthService } from '../auth/auth.service.ts';
 import { BunnyService, syncProcessingVideos } from '../bunny/bunny.service.ts';
 
 export const THUMBNAILS_DIR = path.join(config.uploadDir, 'thumbnails');
 
 const VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.webm', '.mov'];
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+const USERS_PAGE_SIZE = 50;
 
 function slugify(text: string): string {
   return text
@@ -145,6 +147,302 @@ export class AdminController {
       take: 500,
     });
     return res.json({ purchases });
+  }
+
+  /**
+   * User Management - Paginated list (50 per page, newest first). Never returns passwordHash or tokens.
+   */
+  public static async getUsers(req: Request, res: Response) {
+    const search = String(req.query.search || '').trim();
+    const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
+
+    const where = search
+      ? {
+          OR: [
+            { email: { contains: search, mode: 'insensitive' as const } },
+            { username: { contains: search, mode: 'insensitive' as const } },
+          ],
+        }
+      : {};
+
+    const [items, total] = await Promise.all([
+      db.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          role: true,
+          isSuspended: true,
+          createdAt: true,
+          lastLoginAt: true,
+          lockoutUntil: true,
+          _count: { select: { entitlements: { where: { status: 'ACTIVE' } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * USERS_PAGE_SIZE,
+        take: USERS_PAGE_SIZE,
+      }),
+      db.user.count({ where }),
+    ]);
+
+    return res.json({ items, total });
+  }
+
+  /**
+   * User Management - Single user with entitlements and session count
+   */
+  public static async getUserById(req: Request, res: Response) {
+    const user = await db.user.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        isSuspended: true,
+        suspendedReason: true,
+        failedLoginAttempts: true,
+        lockoutUntil: true,
+        lastLoginAt: true,
+        lastLoginIp: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { sessions: true } },
+      },
+    });
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    const entitlements = await db.entitlement.findMany({
+      where: { userId: user.id },
+      select: {
+        status: true,
+        purchaseId: true,
+        grantedAt: true,
+        video: { select: { id: true, title: true } },
+      },
+      orderBy: { grantedAt: 'desc' },
+    });
+
+    const { _count, ...details } = user;
+    return res.json({
+      user: details,
+      entitlements: entitlements.map(e => ({
+        videoId: e.video.id,
+        videoTitle: e.video.title,
+        status: e.status,
+        purchaseId: e.purchaseId,
+        createdAt: e.grantedAt,
+      })),
+      sessionsCount: _count.sessions,
+    });
+  }
+
+  /**
+   * User Management - Suspend / reactivate or change role.
+   * An admin can never touch their own account, a SUPER_ADMIN account, and (unless SUPER_ADMIN) roles.
+   */
+  public static async updateUser(req: Request, res: Response) {
+    const actor = (req as any).user;
+    const { isSuspended, role } = req.body;
+
+    const target = await db.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    if (target.id === actor.id) {
+      return res.status(400).json({ error: 'CANNOT_MODIFY_SELF', message: 'Nu îți poți modifica propriul cont.' });
+    }
+    if (target.role === 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'FORBIDDEN_TARGET_SUPER_ADMIN', message: 'Conturile SUPER_ADMIN nu pot fi modificate.' });
+    }
+
+    if (role !== undefined) {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'FORBIDDEN_ROLE_CHANGE', message: 'Doar un SUPER_ADMIN poate schimba rolurile.' });
+      }
+      // SUPER_ADMIN is never assigned from the API
+      if (role !== 'USER' && role !== 'ADMIN') {
+        return res.status(400).json({ error: 'INVALID_ROLE', message: 'Rolurile permise sunt USER și ADMIN.' });
+      }
+    }
+
+    if (isSuspended !== undefined && typeof isSuspended !== 'boolean') {
+      return res.status(400).json({ error: 'INVALID_SUSPENSION', message: 'Valoare invalidă pentru suspendare.' });
+    }
+
+    const suspend = isSuspended === true;
+
+    const updated = await db.$transaction(async tx => {
+      const user = await tx.user.update({
+        where: { id: target.id },
+        data: {
+          ...(isSuspended !== undefined && { isSuspended }),
+          ...(role !== undefined && { role }),
+        },
+      });
+
+      if (suspend) {
+        // Running streams are closed before the sessions disappear, so players stop instead of erroring out
+        await tx.playbackSession.updateMany({
+          where: { userId: target.id, status: 'ACTIVE' },
+          data: { status: 'ENDED', endedAt: new Date() },
+        });
+        await tx.session.deleteMany({ where: { userId: target.id } });
+      }
+
+      return user;
+    });
+
+    AuditService.logEvent({
+      eventType: suspend ? 'ADMIN_SUSPENDED_USER' : 'ADMIN_UPDATED_USER',
+      severity: suspend || role !== undefined ? 'WARNING' : 'INFO',
+      userId: target.id,
+      ...auditContext(req),
+      metadata: {
+        changedFields: Object.keys(req.body || {}),
+        previousRole: target.role,
+        role: updated.role,
+        isSuspended: updated.isSuspended,
+      },
+    });
+
+    const { passwordHash, ...safeUser } = updated;
+    return res.json({ user: safeUser });
+  }
+
+  /**
+   * User Management - Kill every session and clear the brute-force lockout
+   */
+  public static async logoutAllSessions(req: Request, res: Response) {
+    const target = await db.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    const [deleted] = await db.$transaction([
+      db.session.deleteMany({ where: { userId: target.id } }),
+      db.user.update({
+        where: { id: target.id },
+        data: { failedLoginAttempts: 0, lockoutUntil: null },
+      }),
+    ]);
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_LOGGED_OUT_ALL_SESSIONS',
+      severity: 'WARNING',
+      userId: target.id,
+      ...auditContext(req),
+      metadata: { deletedSessions: deleted.count },
+    });
+
+    return res.json({ success: true, message: 'Toate sesiunile utilizatorului au fost închise.' });
+  }
+
+  /**
+   * User Management - Send the standard password reset email on behalf of the user
+   */
+  public static async sendPasswordReset(req: Request, res: Response) {
+    const target = await db.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    await AuthService.requestPasswordReset({
+      email: target.email,
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || 'Unknown',
+    });
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_SENT_PASSWORD_RESET',
+      severity: 'WARNING',
+      userId: target.id,
+      ...auditContext(req),
+      metadata: { email: target.email, isSuspended: target.isSuspended },
+    });
+
+    return res.json({ success: true, message: 'Emailul de resetare a parolei a fost trimis.' });
+  }
+
+  /**
+   * User Management - Manually grant a video. A manual grant has no purchase behind it.
+   */
+  public static async grantEntitlement(req: Request, res: Response) {
+    const user = await db.user.findUnique({ where: { id: req.params.id } });
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    const videoId = typeof req.body?.videoId === 'string' ? req.body.videoId.trim() : '';
+    if (!videoId) return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Selectează un videoclip.' });
+
+    const video = await db.video.findUnique({ where: { id: videoId } });
+    if (!video) return res.status(404).json({ error: 'VIDEO_NOT_FOUND', message: 'Videoclipul nu a fost găsit.' });
+
+    const existing = await db.entitlement.findUnique({
+      where: { userId_videoId: { userId: user.id, videoId: video.id } },
+    });
+
+    // A grant only keeps the purchaseId if the access already came from a real purchase
+    const entitlement = await db.entitlement.upsert({
+      where: { userId_videoId: { userId: user.id, videoId: video.id } },
+      update: {
+        status: 'ACTIVE',
+        purchaseId: existing?.purchaseId ?? null,
+        revokedAt: null,
+        revokedReason: null,
+      },
+      create: {
+        userId: user.id,
+        videoId: video.id,
+        purchaseId: null,
+        status: 'ACTIVE',
+      },
+    });
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_GRANTED_ENTITLEMENT',
+      userId: user.id,
+      videoId: video.id,
+      ...auditContext(req),
+      metadata: { entitlementId: entitlement.id, purchaseId: entitlement.purchaseId, videoTitle: video.title },
+    });
+
+    return res.json({ entitlement });
+  }
+
+  /**
+   * User Management - Revoke a video. The purchase/payment rows stay untouched.
+   */
+  public static async revokeEntitlement(req: Request, res: Response) {
+    const { id, videoId } = req.params;
+
+    const user = await db.user.findUnique({ where: { id } });
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilizatorul nu a fost găsit.' });
+
+    const existing = await db.entitlement.findUnique({
+      where: { userId_videoId: { userId: user.id, videoId } },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'ENTITLEMENT_NOT_FOUND', message: 'Utilizatorul nu are acest videoclip în bibliotecă.' });
+    }
+
+    const [entitlement] = await db.$transaction([
+      db.entitlement.update({
+        where: { id: existing.id },
+        data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'ADMIN_REVOKED' },
+      }),
+      // Ends the running streams like POST /playback/:videoId/end does, so the heartbeat returns { active: false }
+      db.playbackSession.updateMany({
+        where: { userId: user.id, videoId, status: 'ACTIVE' },
+        data: { status: 'ENDED', endedAt: new Date() },
+      }),
+    ]);
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_REVOKED_ENTITLEMENT',
+      severity: 'WARNING',
+      userId: user.id,
+      videoId,
+      ...auditContext(req),
+      metadata: { entitlementId: entitlement.id, purchaseId: existing.purchaseId },
+    });
+
+    return res.json({ entitlement });
   }
 
   /**
@@ -384,7 +682,70 @@ export class AdminController {
     const category = await db.category.create({
       data: { name, slug, description: req.body.description || null },
     });
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_CREATED_CATEGORY',
+      ...auditContext(req),
+      metadata: { categoryId: category.id, name: category.name },
+    });
+
     return res.status(201).json({ category });
+  }
+
+  /**
+   * Category Management - Rename (same slug normalization as creation)
+   */
+  public static async updateCategory(req: Request, res: Response) {
+    const category = await db.category.findUnique({ where: { id: req.params.id } });
+    if (!category) return res.status(404).json({ error: 'CATEGORY_NOT_FOUND', message: 'Categoria nu a fost găsită.' });
+
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Numele categoriei este obligatoriu.' });
+
+    const slug = slugify(name);
+    const duplicate = await db.category.findUnique({ where: { slug } });
+    if (duplicate && duplicate.id !== category.id) {
+      return res.status(409).json({ error: 'CATEGORY_EXISTS', message: 'Există deja o categorie cu acest nume.' });
+    }
+
+    const updated = await db.category.update({ where: { id: category.id }, data: { name, slug } });
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_UPDATED_CATEGORY',
+      ...auditContext(req),
+      metadata: { categoryId: category.id, name, previousName: category.name },
+    });
+
+    return res.json({ category: updated });
+  }
+
+  /**
+   * Category Management - Delete (only empty categories)
+   */
+  public static async deleteCategory(req: Request, res: Response) {
+    const category = await db.category.findUnique({
+      where: { id: req.params.id },
+      include: { _count: { select: { videos: true } } },
+    });
+    if (!category) return res.status(404).json({ error: 'CATEGORY_NOT_FOUND', message: 'Categoria nu a fost găsită.' });
+
+    if (category._count.videos > 0) {
+      return res.status(409).json({
+        error: 'CATEGORY_HAS_VIDEOS',
+        message: `Categoria „${category.name}” conține filme și nu poate fi ștearsă. Mută filmele într-o altă categorie mai întâi.`,
+      });
+    }
+
+    await db.category.delete({ where: { id: category.id } });
+
+    AuditService.logEvent({
+      eventType: 'ADMIN_DELETED_CATEGORY',
+      severity: 'WARNING',
+      ...auditContext(req),
+      metadata: { categoryId: category.id, deletedName: category.name },
+    });
+
+    return res.json({ success: true, message: 'Categoria a fost ștearsă.' });
   }
 
   /**
