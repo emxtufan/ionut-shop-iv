@@ -8,7 +8,7 @@ Filmele se încarcă din panoul de admin și sunt stocate, convertite și protej
 Sunt două locuri, iar ordinea e simplă: **Admin → Setări are prioritate, `.env` e fallback.**
 
 - **`.env`** (rădăcină, model în `.env.example`) conține doar infrastructura: `DATABASE_URL`, `NODE_ENV`, `PORT`, `TRUST_PROXY_HOPS`, `UPLOAD_DIR`, primul cont de admin (`ADMIN_EMAIL`, `ADMIN_PASSWORD`) și, opțional, `SETTINGS_ENCRYPTION_KEY`. Pe server poți pune aceleași variabile în panoul hostingului; cele setate pe server au prioritate față de `.env`.
-- **Admin → Setări** conține restul: adresa site-ului (`APP_URL`), Bunny Stream, Stripe, SMTP, datele firmei, TVA, moneda, watermark, streamuri simultane. Doar contul `SUPER_ADMIN` are acces. Ce salvezi acolo intră în vigoare imediat, fără repornire. Dacă ștergi o setare din panou, se folosește din nou valoarea din `.env` (sau valoarea implicită a aplicației).
+- **Admin → Setări** conține restul: adresa site-ului (`APP_URL`), Bunny Stream, Stripe, SMTP, datele firmei, TVA, moneda, watermark, streamuri simultane, facturarea FGO. Doar contul `SUPER_ADMIN` are acces. Ce salvezi acolo intră în vigoare imediat, fără repornire. Dacă ștergi o setare din panou, se folosește din nou valoarea din `.env` (sau valoarea implicită a aplicației).
 - Toată configurația e citită într-un singur loc: `src/server/config.ts`. Dacă lipsește `DATABASE_URL`, serverul **nu pornește** și îți spune exact ce lipsește. Nu există mod de test sau simulare.
 
 
@@ -50,7 +50,16 @@ Configurare Bunny (o singură dată): Admin → Setări → grupul video (Librar
    Manual: Stripe Dashboard → Developers → Webhooks → Add endpoint pe aceeași adresă, cu aceleași evenimente, apoi copiază „Signing secret” în câmpul de secret webhook.
 3. Local: `stripe listen --forward-to localhost:3000/api/payments/webhook` îți dă un `whsec_…` temporar, pe care îl pui în același câmp.
 
-Fluxul: client → Stripe Checkout → înapoi pe site. Accesul se activează fie la întoarcere, fie prin webhook, oricare ajunge primul. Se emite factura (serie `INVOICE_SERIES`, număr secvențial, TVA `VAT_RATE`, datele firmei din `COMPANY_*`) și se trimit emailurile de confirmare. La refund total sau dispută, accesul se revocă automat.
+Fluxul: client → Stripe Checkout → înapoi pe site. Accesul se activează fie la întoarcere, fie prin webhook, oricare ajunge primul. Se emite factura (dacă facturarea FGO e activă, prin API-ul FGO; altfel local, cu seria `INVOICE_SERIES`, număr secvențial, TVA `VAT_RATE` și datele firmei din `COMPANY_*`) și se trimit emailurile de confirmare. La refund total sau dispută, accesul se revocă automat.
+
+## Facturare (FGO)
+
+1. Admin → Setări → **Facturare FGO**: pune adresa API (`https://api-testuat.fgo.ro` pentru teste, `https://api.fgo.ro` în producție), cheia API v2 din contul FGO, codul unic al firmei (doar cifre, fără `RO`), seria din registrul de facturi și ultimul număr emis.
+2. Apasă **Testează FGO**: verifică cheia, codul unic și drepturile ei. Dacă răspunde bine, activează comutatorul **Facturare prin FGO**.
+3. Facturile emise prin FGO apar în **Admin → Facturi**, cu statusul lor. De acolo poți reprograma o emitere eșuată, retrimite emailul cu factura sau cere stornarea.
+4. Dacă opțiunea **Trimite factura în SPV** e activă, aplicația trimite factura în SPV (e-Factura ANAF) imediat după emitere.
+
+Crearea contului FGO, înregistrarea adresei site-ului la FGO, seria din registru și tipul de încasare pentru card: vezi `GHID-ENV.md`, secțiunea **Facturare FGO**.
 
 ## În spatele unui reverse proxy (nginx)
 

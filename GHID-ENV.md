@@ -75,7 +75,38 @@ Butoanele din grupă:
 | Cotă TVA | Plătitor de TVA: `0.21`. **Neplătitor** (de exemplu PFA sau microîntreprindere sub plafon): `0`, și factura nu va mai calcula TVA. Dacă nu știi sigur, întreabă-ți contabilul. |
 | Serie facturi | Seria de facturi, 2–5 litere, de exemplu `CNV` sau inițialele firmei. Numerele merg automat: `CNV-2026-000001`, `000002`… Dacă ai deja facturi emise pe o serie, alege **alta**, ca să nu se suprapună. |
 
-> Facturile sunt generate de aplicație. Dacă firma ta are obligația e-Factura (SPV ANAF), ele **nu se trimit automat** acolo, deci discută cu contabilul.
+> Cu **Facturare FGO** activată (vezi mai jos), facturile fiscale nu mai sunt generate de aplicație, ci de FGO. Trimiterea în SPV (e-Factura ANAF) se face automat din aplicație, dacă opțiunea **Trimite factura în SPV** e activă. Fără FGO, facturile sunt generate de aplicație și **nu** se trimit automat la ANAF.
+
+### Facturare FGO (facturi fiscale prin API)
+
+Pașii, o singură dată:
+
+1. **Cont FGO.** Creează un cont pe **https://testuat.fgo.ro/** pentru teste, cu datele firmei tale. Pentru producție îți trebuie un cont real pe **https://fgo.ro/**, cu abonament minim **Premium** — cheia API v2 nu se generează pe abonamentele sub acesta.
+2. **Cheia v2.** În contul FGO → **Setări eCommerce → API** generezi cheia API v2 (`v2_…`). Cheia primește automat drepturile de care are nevoie aplicația: emitere, citire, anulare, încasare și SPV.
+3. **Adresa platformei.** Tot la **Setări eCommerce → API** înregistrezi adresa site-ului (`https://domeniul-tau.ro`, fără `/` la final). FGO verifică adresa la fiecare scriere: dacă nu e înregistrată, emiterea facturii este refuzată.
+4. **Seria.** Definește în registrul de facturi din FGO seria pe care o vei folosi (2–5 litere, de exemplu `CNV`), ca să nu se suprapună cu facturi emise deja.
+5. **Admin → Setări → Facturare FGO.** Completezi:
+
+| Câmp | Ce pui |
+|---|---|
+| Adresa API (`FGO_API_URL`) | **Test:** `https://api-testuat.fgo.ro`. **Producție:** `https://api.fgo.ro`. Trebuie să înceapă cu `https://`. |
+| Cheie API (`FGO_API_KEY`) | Cheia v2 din contul FGO. E criptată în baza de date. |
+| Cod unic (`FGO_COD_UNIC`) | CUI-ul firmei, **doar cifre, fără `RO`** (ex. `12345678`, nu `RO12345678`). |
+| Adresa platformei (`FGO_PLATFORM_URL`) | Aceeași adresă pe care ai înregistrat-o la FGO. |
+| Serie factură (`FGO_SERIES`) | Seria definită la pasul 4. |
+| Serie storno (opțional) | Doar dacă vrei o serie separată pentru stornări. |
+| Ultimul număr (`FGO_LAST_NUMBER`) | Numărul la care ai rămas în registru. Următoarea factură primește +1. **Gol** = FGO alocă numărul din registrul lui. |
+| Tip factură (`FGO_INVOICE_TYPE`) | `F` (factură). |
+| Tip plată (`FGO_PAYMENT_TYPE`) | `Chitanta`, `Bon` sau `Banca`. Pentru card online se folosește `Banca` — **confirmă cu contabilul** înainte de lansare. |
+| Unitate de măsură (`FGO_UM`) | `buc`. |
+| Trimite factura în SPV (`FGO_SEND_SPV`) | Activ dacă firma ta are obligația e-Factura. Aplicația apelează atunci trimiterea în SPV pentru fiecare factură emisă. |
+
+6. **Testează FGO.** Apasă butonul: aplicația citește identitatea firmei și drepturile cheii, cu datele salvate. Dacă răspunde bine, **activează** comutatorul **Facturare prin FGO**.
+7. **Urmărire.** Facturile emise prin FGO apar în **Admin → Facturi**, cu statusul FGO (în așteptare, emisă, eșuată), cu eroarea sau avertismentul primit de la FGO. De acolo poți reprograma o factură eșuată, retrimite emailul sau cere stornarea.
+
+> Cât timp FGO e dezactivat, factura este generată de aplicație, cu seria din **Datele firmei** (`INVOICE_SERIES`). După ce activezi FGO, facturile noi trec prin FGO; cele vechi rămân ca atare.
+>
+> Cheile `FGO_*` pot sta și în `.env` (vezi `.env.example`), ca fallback. Valorile salvate în **Admin → Setări** au prioritate.
 
 ### Email (SMTP)
 

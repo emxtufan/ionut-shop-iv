@@ -61,7 +61,7 @@ const TEST_LABELS: Record<TestKey, string> = {
   bunny: 'Testează Bunny',
   stripe: 'Testează Stripe',
   smtp: 'Testează emailul',
-  fgo: 'FGO',
+  fgo: 'Testează FGO',
 };
 
 const CARDS: CardDef[] = [

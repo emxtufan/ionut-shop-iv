@@ -123,8 +123,9 @@ export const LegalPage: React.FC<LegalPageProps> = ({ page }) => {
 
           <Section title="4. Preț, plată și facturare">
             <p>
-              Prețurile afișate sunt în RON și includ TVA. Plata se face online prin Stripe. Factura se emite pe
-              emailul contului, după confirmarea plății.
+              Prețurile afișate sunt în RON și includ TVA. Plata se face online prin Stripe. Factura se emite
+              electronic, prin furnizorul nostru de facturare FGO, și se trimite pe emailul contului, după
+              confirmarea plății.
             </p>
           </Section>
 
@@ -217,7 +218,10 @@ export const LegalPage: React.FC<LegalPageProps> = ({ page }) => {
             <List>
               <li>Datele contului: email, username și hash-ul parolei.</li>
               <li>Datele despre plăți: procesate de Stripe; nu stocăm datele cardului.</li>
-              <li>Datele de facturare: facturile emise pentru achiziții.</li>
+              <li>
+                Datele de facturare: nume, respectiv denumirea firmei, CUI și Nr. Reg. Com. pentru firme, adresa
+                și, opțional, telefonul.
+              </li>
               <li>Adresa IP și user-agent.</li>
               <li>Jurnalul de redare și jurnalul de securitate.</li>
               <li>Emailurile trimise către tine.</li>
@@ -232,7 +236,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({ page }) => {
               </li>
               <li>
                 <span className="text-ink font-medium">Obligație legală</span> (art. 6 alin. 1 lit. c GDPR):
-                facturarea și evidența contabilă.
+                emiterea facturii, evidența contabilă și păstrarea documentelor fiscale.
               </li>
               <li>
                 <span className="text-ink font-medium">Interesul nostru legitim</span> (art. 6 alin. 1 lit. f
@@ -245,6 +249,10 @@ export const LegalPage: React.FC<LegalPageProps> = ({ page }) => {
             <List>
               <li>
                 <span className="text-ink font-medium">Stripe</span> — procesarea plăților.
+              </li>
+              <li>
+                <span className="text-ink font-medium">FGO</span> — emiterea facturilor fiscale și trimiterea lor
+                în SPV (ANAF).
               </li>
               <li>
                 <span className="text-ink font-medium">Bunny.net</span> — livrarea conținutului video.
@@ -277,7 +285,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({ page }) => {
           <Section title="6. Cât timp păstrăm datele">
             <List>
               <li>Datele contului: cât timp contul este activ.</li>
-              <li>Documentele contabile: conform termenelor din legea contabilității.</li>
+              <li>Datele de facturare și documentele contabile: conform legislației fiscale.</li>
               <li>Jurnalele de securitate: cât sunt necesare pentru scopul pentru care au fost colectate.</li>
             </List>
           </Section>
