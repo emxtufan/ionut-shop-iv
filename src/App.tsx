@@ -10,6 +10,7 @@ import { AdminDashboardPage } from './client/pages/AdminDashboardPage.tsx';
 import { SecurePlayer } from './client/components/SecurePlayer.tsx';
 import { CheckoutModal } from './client/components/CheckoutModal.tsx';
 import { AuthModal } from './client/components/AuthModal.tsx';
+import { ResetPasswordModal } from './client/components/ResetPasswordModal.tsx';
 import { Video } from './types/index.ts';
 
 function AppContent() {
@@ -22,6 +23,19 @@ function AppContent() {
   const [activeWatchVideo, setActiveWatchVideo] = useState<Video | null>(null);
   const [activeCheckoutVideo, setActiveCheckoutVideo] = useState<Video | null>(null);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+
+  // Check for password reset link redirect (?resetToken=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('resetToken');
+
+    if (token) {
+      // Clean query params from address bar
+      window.history.replaceState({}, '', window.location.pathname);
+      setResetToken(token);
+    }
+  }, []);
 
   // Check for Stripe Checkout return redirect (?stripe_payment=success&session_id=...)
   useEffect(() => {
@@ -171,6 +185,23 @@ function AppContent() {
         <CheckoutModal
           video={activeCheckoutVideo}
           onClose={() => setActiveCheckoutVideo(null)}
+        />
+      )}
+
+      {/* Reset Password Modal (from email link ?resetToken=...) */}
+      {resetToken && (
+        <ResetPasswordModal
+          token={resetToken}
+          onClose={() => setResetToken(null)}
+          onSuccess={(message) => {
+            setResetToken(null);
+            notification.success({
+              message: 'Parolă actualizată',
+              description: message,
+              placement: 'bottomRight',
+            });
+            setShowAuthModal(true);
+          }}
         />
       )}
 
