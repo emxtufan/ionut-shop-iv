@@ -132,7 +132,7 @@ export const SecurePlayer: React.FC<SecurePlayerProps> = ({ videoId, videoTitle,
             onClick={toggleFullscreen}
             title={isFullscreen ? 'Ieși din ecran complet' : 'Ecran complet'}
             aria-label={isFullscreen ? 'Ieși din ecran complet' : 'Ecran complet'}
-            className="absolute bottom-1.5 right-1.5 z-40 w-9 h-9 rounded bg-black/80 hover:bg-black opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-white flex items-center justify-center cursor-pointer"
+            className="absolute bottom-1.5 right-1.5 z-40 w-9 h-9 rounded bg-black/80 hover:bg-black opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity text-white flex items-center justify-center cursor-pointer"
           >
             {isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
           </button>
