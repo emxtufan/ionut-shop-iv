@@ -9,7 +9,7 @@ const company = config.company;
 /**
  * Escapes a dynamic value before it is interpolated into HTML (& < > " ')
  */
-function escapeHtml(value: unknown): string {
+export function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
