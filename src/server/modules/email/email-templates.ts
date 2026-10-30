@@ -55,6 +55,14 @@ export interface InvoiceEmailData {
   appUrl: string;
 }
 
+export interface PasswordResetEmailData {
+  username: string;
+  email: string;
+  resetToken: string;
+  appUrl: string;
+  expiresInMinutes?: number;
+}
+
 /**
  * Base Apple-style email container with crisp typography, dark mode / high contrast and zero visual slop
  */
@@ -414,6 +422,58 @@ export function generateStripeInvoiceEmail(data: InvoiceEmailData): { subject: s
     `Status: ACHITAT (Stripe)\n` +
     `Ref Stripe: ${data.stripePaymentIntentId || 'OK'}\n\n` +
     `Vizualizare chitanță: ${data.appUrl}/?view=purchases`;
+
+  return { subject, html, text };
+}
+
+/**
+ * 4. Password Reset Template (one-time link, valid for 1 hour)
+ */
+export function generatePasswordResetEmail(data: PasswordResetEmailData): { subject: string; html: string; text: string } {
+  const subject = `Resetarea parolei — ${company.name}`;
+  const expiresInMinutes = data.expiresInMinutes || 60;
+  const resetUrl = `${data.appUrl}/?resetToken=${encodeURIComponent(data.resetToken)}`;
+
+  const body = `
+    <h1>Resetarea parolei</h1>
+    <p>
+      Am primit o solicitare de resetare a parolei pentru contul <strong>${escapeHtml(data.email)}</strong>.
+      Apasă butonul de mai jos pentru a alege o parolă nouă.
+    </p>
+
+    <div class="cta-container">
+      <a href="${escapeHtml(resetUrl)}" class="cta-button">Setează parola nouă</a>
+    </div>
+
+    <div class="highlight-box">
+      <div class="item-row">
+        <span class="item-label">Utilizator</span>
+        <span class="item-value">${escapeHtml(data.username)}</span>
+      </div>
+      <div class="item-row">
+        <span class="item-label">Valabilitate link</span>
+        <span class="item-value">${escapeHtml(expiresInMinutes)} minute</span>
+      </div>
+      <div class="item-row">
+        <span class="item-label">Utilizări permise</span>
+        <span class="item-value">O singură dată</span>
+      </div>
+    </div>
+
+    <p style="font-size: 14px;">
+      Linkul expiră în ${escapeHtml(expiresInMinutes)} minute și poate fi folosit o singură dată. Dacă nu ai solicitat
+      resetarea parolei, ignoră acest email — parola ta rămâne neschimbată.
+    </p>
+  `;
+
+  const html = wrapHtmlTemplate('Resetarea parolei', body, data.appUrl);
+
+  const text = `Resetarea parolei ${company.name}\n\n` +
+    `Am primit o solicitare de resetare a parolei pentru adresa ${data.email}.\n` +
+    `Deschide linkul pentru a alege o parolă nouă: ${resetUrl}\n\n` +
+    `Linkul expiră în ${expiresInMinutes} minute și poate fi folosit o singură dată.\n` +
+    `Dacă nu ai solicitat resetarea parolei, ignoră acest email.\n\n` +
+    `${company.name}`;
 
   return { subject, html, text };
 }

@@ -12,6 +12,7 @@ import {
   generateWelcomeEmail,
   generatePurchaseEmail,
   generateStripeInvoiceEmail,
+  generatePasswordResetEmail,
   escapeHtml,
 } from './email-templates.ts';
 import { AuditService } from '../audit/audit.service.ts';
@@ -63,6 +64,7 @@ export class EmailService {
     text: string;
     type: EmailType;
     metadata?: Record<string, any>;
+    logHtml?: string; // replaces the body stored in EmailLog (for emails carrying secrets)
   }): Promise<EmailLog> {
     let status: 'SENT' | 'FAILED' = 'SENT';
     let error: string | null = null;
@@ -90,7 +92,7 @@ export class EmailService {
         type: params.type,
         status,
         error,
-        html: params.html,
+        html: params.logHtml ?? params.html,
         metadata,
       },
     });
@@ -169,7 +171,44 @@ export class EmailService {
   }
 
   /**
-   * 3. Fiscal Invoice Email
+   * 3. Password Reset Email (one-time token, valid 1 hour)
+   */
+  public static async sendPasswordResetEmail(params: {
+    user: PublicUser;
+    token: string;
+    ip?: string;
+    userAgent?: string;
+  }) {
+    const template = generatePasswordResetEmail({
+      username: params.user.username,
+      email: params.user.email,
+      resetToken: params.token,
+      appUrl: config.appUrl,
+      expiresInMinutes: 60,
+    });
+
+    const log = await this.sendEmail({
+      to: params.user.email,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      type: 'PASSWORD_RESET',
+      // The body embeds the reset token: never store it in EmailLog
+      logHtml: '[conținut omis: link de resetare]',
+      metadata: { userId: params.user.id },
+    });
+
+    AuditService.logEvent({
+      eventType: 'EMAIL_SENT',
+      userId: params.user.id,
+      ip: params.ip || 'system',
+      userAgent: params.userAgent || 'System',
+      metadata: { emailType: 'PASSWORD_RESET', recipient: params.user.email, status: log.status },
+    });
+  }
+
+  /**
+   * 4. Fiscal Invoice Email
    */
   public static async sendInvoiceEmail(params: { user: PublicUser; video: Video; invoice: Invoice }) {
     const { invoice } = params;

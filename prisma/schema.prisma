@@ -64,6 +64,8 @@ model User {
   suspendedReason     String?
   failedLoginAttempts Int       @default(0)
   lockoutUntil        DateTime?
+  passwordResetTokenHash String?   @unique // sha256 of the raw token sent by email, never the token itself
+  passwordResetExpiresAt DateTime?
   lastLoginAt         DateTime?
   lastLoginIp         String?
   createdAt           DateTime  @default(now())

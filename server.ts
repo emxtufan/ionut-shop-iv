@@ -78,6 +78,8 @@ app.get('/api/health', ah(async (req: Request, res: Response) => {
 // -----------------------------------------------------------------------------
 app.post('/api/auth/register', authLimiter, ah(AuthController.register));
 app.post('/api/auth/login', authLimiter, ah(AuthController.login));
+app.post('/api/auth/forgot-password', authLimiter, ah(AuthController.forgotPassword));
+app.post('/api/auth/reset-password', authLimiter, ah(AuthController.resetPassword));
 app.post('/api/auth/logout', ah(AuthController.logout));
 app.get('/api/auth/me', authenticate, ah(AuthController.me));
 

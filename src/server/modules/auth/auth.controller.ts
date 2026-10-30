@@ -90,4 +90,62 @@ export class AuthController {
   public static async me(req: Request, res: Response) {
     return res.json({ user: (req as any).user });
   }
+
+  /**
+   * Always answers 200 with the same message, so the endpoint cannot be used to enumerate accounts
+   */
+  public static async forgotPassword(req: Request, res: Response) {
+    const message = 'Dacă adresa există, vei primi un email cu instrucțiuni.';
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+
+    if (!email) {
+      return res.status(200).json({ message });
+    }
+
+    try {
+      await AuthService.requestPasswordReset({
+        email,
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      });
+    } catch (err) {
+      console.error('[AuthController] forgotPassword failed:', err);
+    }
+
+    return res.status(200).json({ message });
+  }
+
+  public static async resetPassword(req: Request, res: Response) {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    try {
+      if (!token || !password) {
+        throw new Error('INVALID_RESET_TOKEN');
+      }
+
+      await AuthService.resetPassword({
+        token,
+        password,
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Parola a fost actualizată. Te poți autentifica cu noua parolă.',
+      });
+    } catch (err: any) {
+      const messageMap: Record<string, string> = {
+        INVALID_RESET_TOKEN: 'Linkul este invalid sau a expirat.',
+        PASSWORD_TOO_SHORT: 'Parola trebuie să aibă minim 8 caractere.',
+        PASSWORD_TOO_LONG: 'Parola poate avea maxim 128 de caractere.',
+      };
+      if (!messageMap[err.message]) console.error('[AuthController] resetPassword failed:', err);
+      return res.status(400).json({
+        error: err.message,
+        message: messageMap[err.message] || 'Linkul este invalid sau a expirat.',
+      });
+    }
+  }
 }

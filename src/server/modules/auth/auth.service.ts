@@ -261,4 +261,128 @@ export class AuthService {
       userAgent,
     });
   }
+
+  /**
+   * Starts the password reset flow. Never throws for an unknown account and never
+   * reveals whether the email exists (the response time is kept constant).
+   */
+  public static async requestPasswordReset(params: {
+    email: string;
+    ip: string;
+    userAgent: string;
+  }): Promise<void> {
+    const email = params.email.trim().toLowerCase();
+    const user = await db.user.findUnique({ where: { email } });
+
+    if (!user || user.isSuspended) {
+      AuditService.logEvent({
+        eventType: 'PASSWORD_RESET_REQUESTED',
+        severity: 'WARNING',
+        userId: user ? user.id : null,
+        ip: params.ip,
+        userAgent: params.userAgent,
+        metadata: { email, reason: user ? 'ACCOUNT_SUSPENDED' : 'USER_NOT_FOUND' },
+      });
+      return;
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const passwordResetTokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    await db.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash,
+        passwordResetExpiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+      },
+    });
+
+    // Fire-and-forget: the caller must not learn from the latency whether the email was sent
+    EmailService.sendPasswordResetEmail({
+      user: toPublicUser(user),
+      token,
+      ip: params.ip,
+      userAgent: params.userAgent,
+    }).catch(err => {
+      console.error('[AuthService] Error dispatching password reset email:', err);
+    });
+
+    AuditService.logEvent({
+      eventType: 'PASSWORD_RESET_REQUESTED',
+      userId: user.id,
+      ip: params.ip,
+      userAgent: params.userAgent,
+      metadata: { email: user.email, expiresInMinutes: 60 },
+    });
+  }
+
+  /**
+   * Consumes a one-time reset token: sets the new password, clears the token,
+   * resets the lockout counters and invalidates every existing session.
+   */
+  public static async resetPassword(params: {
+    token: string;
+    password: string;
+    ip: string;
+    userAgent: string;
+  }): Promise<void> {
+    if (params.password.length < 8) {
+      throw new Error('PASSWORD_TOO_SHORT');
+    }
+
+    if (params.password.length > 128) {
+      throw new Error('PASSWORD_TOO_LONG');
+    }
+
+    const passwordResetTokenHash = crypto.createHash('sha256').update(params.token).digest('hex');
+    const user = await db.user.findFirst({
+      where: {
+        passwordResetTokenHash,
+        passwordResetExpiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!user || user.isSuspended) {
+      AuditService.logEvent({
+        eventType: 'PASSWORD_RESET_FAILED',
+        severity: 'WARNING',
+        userId: user ? user.id : null,
+        ip: params.ip,
+        userAgent: params.userAgent,
+        metadata: { reason: user ? 'ACCOUNT_SUSPENDED' : 'INVALID_RESET_TOKEN' },
+      });
+      throw new Error('INVALID_RESET_TOKEN');
+    }
+
+    const passwordHash = hashPassword(params.password);
+
+    await db.$transaction(async tx => {
+      // The token hash is part of the WHERE clause, so a second (racing) use updates 0 rows
+      const consumed = await tx.user.updateMany({
+        where: { id: user.id, passwordResetTokenHash },
+        data: {
+          passwordHash,
+          passwordResetTokenHash: null,
+          passwordResetExpiresAt: null,
+          failedLoginAttempts: 0,
+          lockoutUntil: null,
+        },
+      });
+
+      if (consumed.count === 0) {
+        throw new Error('INVALID_RESET_TOKEN');
+      }
+
+      await tx.session.deleteMany({ where: { userId: user.id } });
+    });
+
+    AuditService.logEvent({
+      eventType: 'PASSWORD_RESET_COMPLETED',
+      severity: 'CRITICAL',
+      userId: user.id,
+      ip: params.ip,
+      userAgent: params.userAgent,
+      metadata: { email: user.email, sessionsInvalidated: true },
+    });
+  }
 }
