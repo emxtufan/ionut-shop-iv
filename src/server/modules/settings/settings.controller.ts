@@ -143,7 +143,7 @@ export class SettingsController {
     try {
       const stripe = stripeClient();
       const [account, endpoints] = await Promise.all([
-        stripe.accounts.retrieve(),
+        stripe.accounts.retrieveCurrent(),
         stripe.webhookEndpoints.list({ limit: 100 }),
       ]);
 

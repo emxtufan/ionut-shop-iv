@@ -3,6 +3,7 @@
 // ==============================================================================
 
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 import type { EmailLog, Invoice, Purchase, Video } from '@prisma/client';
 import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
@@ -20,10 +21,10 @@ import { SettingsService } from '../settings/settings.service.ts';
 
 // The transporter is rebuilt on demand from the current config, so SMTP changes made in the
 // admin panel work without a restart (SettingsService.onChange below drops the cached one).
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 let transporterSignature = '';
 
-function getTransporter(): nodemailer.Transporter {
+function getTransporter(): Transporter {
   const signature = [config.smtp.host, config.smtp.port, config.smtp.secure, config.smtp.user, config.smtp.pass].join('|');
   if (!transporter || signature !== transporterSignature) {
     transporter = nodemailer.createTransport({
