@@ -69,6 +69,8 @@ app.use(securityHeaders);
 
 const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, maxRequests: 20, actionName: 'auth_attempt' });
 const generalApiLimiter = createRateLimiter({ windowMs: 60 * 1000, maxRequests: 120, actionName: 'api_general' });
+// Account creation is far more abusable than a login attempt: its own, much tighter bucket per IP
+const registerLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, maxRequests: 10, actionName: 'register' });
 
 app.use('/api', generalApiLimiter);
 
@@ -98,7 +100,7 @@ app.get('/api/public/company', (req: Request, res: Response) => {
 // -----------------------------------------------------------------------------
 // Auth
 // -----------------------------------------------------------------------------
-app.post('/api/auth/register', authLimiter, ah(AuthController.register));
+app.post('/api/auth/register', registerLimiter, ah(AuthController.register));
 app.post('/api/auth/login', authLimiter, ah(AuthController.login));
 app.post('/api/auth/forgot-password', authLimiter, ah(AuthController.forgotPassword));
 app.post('/api/auth/reset-password', authLimiter, ah(AuthController.resetPassword));
@@ -325,13 +327,41 @@ async function bootstrapServer() {
     });
   }
 
-  app.listen(config.port, '0.0.0.0', () => {
+  const server = app.listen(config.port, '0.0.0.0', () => {
     console.log(`[IV Concept VOD] ${config.isProduction ? 'Production' : 'Development'} server on http://0.0.0.0:${config.port}`);
     console.log(`[IV Concept VOD] Uploads stored in ${config.uploadDir}`);
   });
 
   // The FGO invoice queue is drained once a minute; unref so the timer never keeps the process alive
-  setInterval(FgoService.kick, 60_000).unref();
+  const fgoTimer = setInterval(FgoService.kick, 60_000).unref();
+
+  // One shutdown path for both signals: stop taking requests, let the running FGO pass finish,
+  // close the database, then exit. The safety timer ends the process even if something hangs.
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[IV Concept VOD] ${signal} received, shutting down`);
+
+    setTimeout(() => {
+      console.error('[IV Concept VOD] Graceful shutdown timed out, forcing exit');
+      process.exit(1);
+    }, 15_000).unref();
+
+    clearInterval(fgoTimer);
+    server.close();
+    server.closeIdleConnections();
+    // Keep-alive sockets that are still busy get a few seconds, then they are cut
+    setTimeout(() => server.closeAllConnections(), 5_000).unref();
+
+    // Never cut an invoice in half; waitIdle also stops new queue passes from starting
+    await FgoService.waitIdle(8_000);
+    await db.$disconnect();
+    process.exit(0);
+  };
+
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 bootstrapServer().catch(err => {

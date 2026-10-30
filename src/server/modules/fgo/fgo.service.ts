@@ -122,6 +122,21 @@ function apiHostname(): string {
 }
 
 /**
+ * A Stripe test payment must never become a real fiscal invoice: on the production FGO
+ * host (api.fgo.ro) the issuance is refused while Stripe still runs on a test key.
+ * An unreadable apiUrl is not production, so it does not block (FGO itself will answer).
+ */
+export function blocksRealInvoice(apiUrl: string, stripeKey: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(apiUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === 'api.fgo.ro' && stripeKey.startsWith('sk_test_');
+}
+
+/**
  * Only https links on fgo.ro / *.fgo.ro are accepted, plus the API host itself
  * (the FGO mock used in tests answers on the same host as apiUrl).
  */
@@ -166,6 +181,16 @@ async function request(method: string, path: string, body?: Record<string, any>)
       status: 0,
       retryable: false,
       message: 'FGO nu este configurat: lipsește cheia API sau codul unic al firmei.',
+    });
+  }
+
+  // Every write is refused while a Stripe test key would produce a real fiscal invoice
+  if (method !== 'GET' && blocksRealInvoice(config.fgo.apiUrl, config.stripe.secretKey)) {
+    throw new FgoError({
+      status: 400,
+      retryable: false,
+      message:
+        'Stripe este pe cheie de test, iar FGO pe producție (api.fgo.ro). Factura nu a fost trimisă, ca o plată de test să nu devină factură fiscală reală. Folosește https://api-testuat.fgo.ro sau cheia Stripe live.',
     });
   }
 
@@ -291,12 +316,15 @@ export class FgoService {
   private static running = false;
   /** A kick that arrived during a run must not be lost. */
   private static rerun = false;
+  /** Set once the process is shutting down: no new queue pass is started after that. */
+  private static stopping = false;
 
   /**
    * Runs the due invoices once: FGO enabled, one worker at a time, oldest invoice first.
    */
   // ponytail: un singur proces, coadă în memorie; lock în DB dacă rulezi mai multe instanțe.
   public static async processDue(): Promise<void> {
+    if (FgoService.stopping) return;
     if (!config.fgo.enabled) return;
 
     if (FgoService.running) {
@@ -322,9 +350,11 @@ export class FgoService {
 
   /**
    * Waits for the running queue pass to finish, so a shutdown never cuts an invoice in half.
-   * Gives up after 10s: the database connection is closed right after this returns.
+   * From here on no new pass starts; gives up after the timeout, because the database
+   * connection is closed right after this returns.
    */
   public static async waitIdle(timeoutMs = 10_000): Promise<void> {
+    FgoService.stopping = true;
     const deadline = Date.now() + timeoutMs;
     while (FgoService.running && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 100));

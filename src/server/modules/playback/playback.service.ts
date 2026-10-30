@@ -13,6 +13,9 @@ import { AuditService } from '../audit/audit.service.ts';
 import { RiskEngine } from '../security/risk-engine.ts';
 import { BunnyService, syncProcessingVideos } from '../bunny/bunny.service.ts';
 
+/** Lifetime of the signed embed URL; the player verifies it once, when the iframe loads. */
+const PLAYBACK_TOKEN_TTL_SECONDS = 600;
+
 export class PlaybackService {
   /**
    * Request Playback Authorization (entitlement, risk engine, concurrent streams)

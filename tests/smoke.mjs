@@ -262,12 +262,16 @@ async function loadHashPassword() {
   };
 }
 
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+// Sessions are persisted only as their sha256 digest (same as AuthService): the raw token
+// goes to the client as a cookie and is never written to the database.
 async function createPrismaSession(userId) {
   const token = `sess_${RAND}_${crypto.randomBytes(12).toString('hex')}`;
   await prisma.session.create({
     data: {
       userId,
-      token,
+      token: sha256(token),
       ip: CLIENT_IP,
       userAgent: USER_AGENT,
       deviceType: 'CLI',
@@ -276,8 +280,6 @@ async function createPrismaSession(userId) {
   });
   return token;
 }
-
-const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 // ------------------------------------------------------------------------------
 // Seed: category + READY video (10), empty category, ADMIN, SUPER_ADMIN, others
@@ -433,6 +435,13 @@ async function seed() {
   const buyerToken = cookieValue(registration, SESSION_COOKIE);
   assert.ok(buyerToken, 'seed: răspunsul de înregistrare nu setează cookie-ul de sesiune');
   state.tokens.buyer = buyerToken;
+
+  // The session row keeps only the digest: the raw cookie must never be readable from the DB
+  const storedSession = await prisma.session.findUnique({ where: { token: sha256(buyerToken) } });
+  assert.ok(storedSession, 'seed: sesiunea cumpărătorului nu e stocată ca sha256(cookie)');
+  assert.equal(storedSession.userId, buyerId, 'seed: sesiunea găsită prin sha256(cookie) e a altui utilizator');
+  const rawSessionRow = await prisma.session.findUnique({ where: { token: buyerToken } });
+  assert.equal(rawSessionRow, null, 'seed: cookie-ul brut apare ca token de sesiune în DB');
 }
 
 // ------------------------------------------------------------------------------
@@ -2101,6 +2110,30 @@ try {
     assert.equal(billingModule.isValidRoCui(computedCui), true, `M: isValidRoCui(${computedCui}) respinge un CUI valid`);
     const brokenCui = `${computedCui.slice(0, -1)}${(Number(computedCui.slice(-1)) + 1) % 10}`;
     assert.equal(billingModule.isValidRoCui(brokenCui), false, `M: isValidRoCui(${brokenCui}) acceptă altă cifră de control`);
+
+    // --- 8b. Stripe test + FGO producție: nicio factură fiscală reală ---------
+    const fgoModule = await import(new URL('../src/server/modules/fgo/fgo.service.ts', import.meta.url).href);
+    assert.equal(typeof fgoModule.blocksRealInvoice, 'function', 'M: fgo.service.ts nu exportă blocksRealInvoice');
+    assert.equal(
+      fgoModule.blocksRealInvoice('https://api.fgo.ro', 'sk_test_x'),
+      true,
+      'M: blocksRealInvoice lasă o plată Stripe de test să emită factură pe FGO producție'
+    );
+    assert.equal(
+      fgoModule.blocksRealInvoice('https://api-testuat.fgo.ro', 'sk_test_x'),
+      false,
+      'M: blocksRealInvoice blochează emiterea pe FGO test cu cheie Stripe de test'
+    );
+    assert.equal(
+      fgoModule.blocksRealInvoice('https://api.fgo.ro', 'sk_live_x'),
+      false,
+      'M: blocksRealInvoice blochează emiterea reală pe FGO producție cu cheie Stripe live'
+    );
+    assert.equal(
+      fgoModule.blocksRealInvoice('nu-e-un-url', 'sk_test_x'),
+      false,
+      'M: blocksRealInvoice nu tratează un URL invalid ca producție'
+    );
 
     // --- 9. Portul 465 e mereu TLS, chiar cu SMTP_SECURE=false --------------
     // Nimic nu ascultă pe 465 aici, deci verificarea nu are nevoie de rețea reală: un client în clar
