@@ -38,7 +38,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   if (!user) {
     return (
       <div className="max-w-xl mx-auto px-6 py-28 text-center space-y-4">
-        <h2 className="text-2xl font-semibold text-ink tracking-tight">Your Library</h2>
+        <h2 className="text-2xl font-semibold text-ink tracking-tight">Biblioteca ta</h2>
         <p className="text-sm text-muted">
           Autentifică-te pentru a accesa colecția ta personală de masterclass-uri.
         </p>
@@ -67,7 +67,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
       <div className="flex items-baseline justify-between border-b border-ink/10 pb-4">
         <div>
           <h1 className="text-2xl font-semibold text-ink tracking-tight">
-            Library
+            Biblioteca mea
           </h1>
           <p className="text-xs text-muted mt-1">
             {libraryVideos.length} {libraryVideos.length === 1 ? 'film deblocat' : 'filme deblocate'} în contul tău
@@ -89,7 +89,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
             onClick={onExploreCatalog}
             className="rounded-xl px-5 h-10 font-medium text-xs bg-ink text-cream hover:!bg-ink-soft hover:!text-cream border-none"
           >
-            Explore Catalog
+            Explorează catalogul
           </Button>
         </div>
       ) : (

@@ -93,7 +93,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onC
           items={[
             {
               key: 'login',
-              label: 'Sign In',
+              label: 'Autentificare',
               children: (
                 <div className="pt-4 space-y-4">
                   {showForgotPassword ? (
@@ -193,7 +193,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onC
                             size="large"
                             className="rounded-xl font-medium bg-ink text-cream hover:!bg-ink-soft hover:!text-cream border-none"
                           >
-                            Sign In
+                            Autentificare
                           </Button>
                         </Form.Item>
                       </Form>
@@ -204,7 +204,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onC
             },
             {
               key: 'register',
-              label: 'Create Account',
+              label: 'Creează cont',
               children: (
                 <div className="pt-4 space-y-4">
                   <Form layout="vertical" onFinish={handleRegisterSubmit} requiredMark={false}>
@@ -253,7 +253,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onC
                         size="large"
                         className="rounded-xl font-medium bg-ink text-cream hover:!bg-ink-soft hover:!text-cream border-none"
                       >
-                        Create Account
+                        Creează cont
                       </Button>
                     </Form.Item>
                   </Form>

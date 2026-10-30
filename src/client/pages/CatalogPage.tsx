@@ -117,7 +117,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
                   onClick={() => onWatch(heroVideo)}
                   className="px-6 h-11 text-sm font-semibold rounded-xl !bg-cream !text-ink hover:!bg-gold-light hover:!text-ink border-none"
                 >
-                  Watch
+                  Vizionează
                 </Button>
               ) : (
                 <div className="flex items-center gap-4">
@@ -128,7 +128,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
                     onClick={() => onUnlock(heroVideo)}
                     className="px-6 h-11 text-sm font-semibold rounded-xl !bg-cream !text-ink hover:!bg-gold-light hover:!text-ink border-none"
                   >
-                    Unlock
+                    Deblochează
                   </Button>
                   <span className="text-lg font-medium text-cream/90">
                     {heroVideo.priceAmount} {heroVideo.currency}
@@ -145,7 +145,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
         <section className="space-y-5">
           <div className="flex items-baseline justify-between">
             <h2 className="text-lg font-semibold text-ink tracking-tight">
-              My Library
+              Biblioteca mea
             </h2>
             <span className="text-xs text-muted">
               {myLibraryVideos.length} {myLibraryVideos.length === 1 ? 'film' : 'filme'}
@@ -167,7 +167,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({
       {/* 3. Featured Section */}
       <section className="space-y-5">
         <h2 className="text-lg font-semibold text-ink tracking-tight">
-          Featured
+          Recomandate
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
           {featuredVideos.map((video) => (
