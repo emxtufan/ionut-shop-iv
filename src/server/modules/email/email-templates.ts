@@ -4,6 +4,8 @@
 
 import { config } from '../../config.ts';
 
+// Live reference on purpose: the settings service mutates config.company in place,
+// so values saved in the admin panel are used by the next rendered email.
 const company = config.company;
 
 /**

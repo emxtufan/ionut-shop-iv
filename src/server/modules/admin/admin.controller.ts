@@ -581,6 +581,10 @@ export class AdminController {
    * Query: ?name=<original file name>&duration=<seconds>
    */
   public static async uploadVideoFile(req: Request, res: Response) {
+    if (!BunnyService.isConfigured()) {
+      return res.status(503).json({ error: 'BUNNY_NOT_CONFIGURED', message: 'Serviciul video nu este configurat încă.' });
+    }
+
     const video = await db.video.findUnique({ where: { id: req.params.id } });
     if (!video) return res.status(404).json({ error: 'VIDEO_NOT_FOUND' });
 

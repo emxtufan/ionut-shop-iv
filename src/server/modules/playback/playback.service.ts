@@ -40,6 +40,9 @@ export class PlaybackService {
       throw new Error('VIDEO_NOT_READY');
     }
 
+    // Signed embed URLs cannot be produced without the Bunny library/token key
+    if (!BunnyService.isConfigured()) throw new Error('BUNNY_NOT_CONFIGURED');
+
     // 1. Entitlement check (admins can preview everything)
     if (!isAdmin) {
       const entitlement = await db.entitlement.findUnique({
@@ -125,10 +128,10 @@ export class PlaybackService {
       jti,
       embedUrl: BunnyService.embedUrl(video.bunnyVideoId, expires),
       watermark: {
-        text: 'ivconcept.ro',
+        text: config.watermark.text,
         userId: user.id,
         sessionId: playbackSession.id,
-        refreshIntervalSeconds: 5,
+        refreshIntervalSeconds: config.watermark.intervalSeconds,
       },
     };
   }

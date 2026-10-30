@@ -28,20 +28,29 @@ const smtpPort = Number(optional('SMTP_PORT', '587'));
 const smtpFromRaw = (process.env.SMTP_FROM || '').trim();
 const smtpFromEmail = (smtpFromRaw.match(/<([^<>]+)>/)?.[1] || smtpFromRaw).trim();
 
+// The object is intentionally mutable: values coming from the environment are only the
+// starting point, the admin panel overrides them at runtime and writes into these very
+// objects in place (see modules/settings/settings.service.ts). No Object.freeze / as const.
 export const config = {
   isProduction: process.env.NODE_ENV === 'production',
   port: Number(optional('PORT', '3000')),
   // Number of reverse proxies in front of the app (nginx, Cloudflare...). Used to read the real client IP.
   trustProxyHops: Number(optional('TRUST_PROXY_HOPS', '0')),
-  appUrl: required('APP_URL').replace(/\/$/, ''),
+  appUrl: optional('APP_URL', '').replace(/\/$/, ''),
   uploadDir: path.resolve(optional('UPLOAD_DIR', './storage')),
   maxConcurrentStreams: Number(optional('MAX_CONCURRENT_STREAMS', '1')),
 
+  // Overlay burned into the player by the client
+  watermark: {
+    text: optional('WATERMARK_TEXT', 'ivconcept.ro'),
+    intervalSeconds: Number(optional('WATERMARK_INTERVAL_SECONDS', '5')),
+  },
+
   // Bunny Stream (videos are stored, transcoded and DRM-protected by Bunny)
   bunny: {
-    libraryId: required('BUNNY_STREAM_LIBRARY_ID'),
-    apiKey: required('BUNNY_STREAM_API_KEY'),
-    tokenKey: required('BUNNY_STREAM_TOKEN_KEY'),
+    libraryId: optional('BUNNY_STREAM_LIBRARY_ID', ''),
+    apiKey: optional('BUNNY_STREAM_API_KEY', ''),
+    tokenKey: optional('BUNNY_STREAM_TOKEN_KEY', ''),
   },
   sessionDurationDays: 30,
   // A playback session without a heartbeat for this long is considered dead
@@ -49,25 +58,25 @@ export const config = {
   heartbeatTimeoutMs: 120_000,
 
   stripe: {
-    secretKey: required('STRIPE_SECRET_KEY'),
-    webhookSecret: required('STRIPE_WEBHOOK_SECRET'),
+    secretKey: optional('STRIPE_SECRET_KEY', ''),
+    webhookSecret: optional('STRIPE_WEBHOOK_SECRET', ''),
     currency: optional('STRIPE_CURRENCY', 'RON').toUpperCase(),
   },
 
   smtp: {
-    host: required('SMTP_HOST'),
+    host: optional('SMTP_HOST', ''),
     port: smtpPort,
     secure: process.env.SMTP_SECURE === 'true' || smtpPort === 465,
-    user: required('SMTP_USER'),
-    pass: required('SMTP_PASS'),
-    from: required('SMTP_FROM'),
+    user: optional('SMTP_USER', ''),
+    pass: optional('SMTP_PASS', ''),
+    from: optional('SMTP_FROM', ''),
   },
 
   // Seller details printed on fiscal invoices and on the legal pages (Terms / Privacy / Cookies)
   company: {
-    name: required('COMPANY_NAME'),
-    cif: required('COMPANY_CIF'),
-    address: required('COMPANY_ADDRESS'),
+    name: optional('COMPANY_NAME', ''),
+    cif: optional('COMPANY_CIF', ''),
+    address: optional('COMPANY_ADDRESS', ''),
     // Optional: defaults to the address emails are sent from (SMTP_FROM)
     email: optional('COMPANY_EMAIL', smtpFromEmail),
     vatRate: Number(optional('VAT_RATE', '0.21')),
@@ -86,9 +95,5 @@ required('DATABASE_URL'); // read directly by Prisma, checked here so startup fa
 if (missing.length) {
   throw new Error(`Missing required environment variables: ${missing.join(', ')}. See .env.example.`);
 }
-if (!/^sk_(live|test)_/.test(config.stripe.secretKey)) {
-  throw new Error('STRIPE_SECRET_KEY must be a Stripe secret key (sk_live_... or sk_test_...).');
-}
-if (!config.stripe.webhookSecret.startsWith('whsec_')) {
-  throw new Error('STRIPE_WEBHOOK_SECRET must be a Stripe webhook signing secret (whsec_...).');
-}
+// Stripe keys / webhook secret and the rest of the optional settings are validated when they
+// are saved from the admin panel (modules/settings/settings.service.ts), not at startup.

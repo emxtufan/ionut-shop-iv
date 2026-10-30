@@ -10,7 +10,18 @@ import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
 import { toPublicUser } from '../auth/auth.service.ts';
 
-const stripe = new Stripe(config.stripe.secretKey);
+// Stripe client is built lazily and cached per secret key, so a key saved from the
+// admin panel takes effect without a restart.
+let cachedStripe: { key: string; client: Stripe } | null = null;
+
+function getStripe(): Stripe {
+  const key = config.stripe.secretKey;
+  if (!key) throw new Error('PAYMENTS_NOT_CONFIGURED');
+  if (!cachedStripe || cachedStripe.key !== key) {
+    cachedStripe = { key, client: new Stripe(key) };
+  }
+  return cachedStripe.client;
+}
 
 function idOf(ref: string | { id: string } | null | undefined): string | null {
   if (!ref) return null;
@@ -41,6 +52,7 @@ export class PaymentsService {
     acceptedTerms: boolean;
   }): Promise<{ checkoutUrl: string }> {
     if (params.acceptedTerms !== true) throw new Error('TERMS_NOT_ACCEPTED');
+    if (!config.stripe.secretKey) throw new Error('PAYMENTS_NOT_CONFIGURED');
 
     const user = await db.user.findUnique({ where: { id: params.userId } });
     if (!user) throw new Error('USER_NOT_FOUND');
@@ -64,7 +76,7 @@ export class PaymentsService {
 
     if (pendingPayment) {
       try {
-        const openSession = await stripe.checkout.sessions.retrieve(pendingPayment.checkoutSessionId);
+        const openSession = await getStripe().checkout.sessions.retrieve(pendingPayment.checkoutSessionId);
         if (openSession.status === 'open' && openSession.amount_total === amountInSubunits && openSession.url) {
           // Consent was given again on this request; a Purchase row only exists after a payment
           await db.purchase.updateMany({
@@ -98,7 +110,7 @@ export class PaymentsService {
 
     // 2. Identical parameters for every request inside the same minute, plus a per-minute idempotency key
     const bucket = Math.floor(Date.now() / 60000);
-    const session = await stripe.checkout.sessions.create(
+    const session = await getStripe().checkout.sessions.create(
       {
         mode: 'payment',
         payment_method_types: ['card'],
@@ -164,7 +176,8 @@ export class PaymentsService {
     currentUserId: string,
     ip: string
   ): Promise<{ success: boolean; videoId?: string; message?: string }> {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (!config.stripe.secretKey) throw new Error('PAYMENTS_NOT_CONFIGURED');
+    const session = await getStripe().checkout.sessions.retrieve(sessionId);
 
     if (session.metadata?.userId !== currentUserId) {
       return { success: false, message: 'Sesiunea de plată nu aparține contului curent.' };
@@ -194,7 +207,7 @@ export class PaymentsService {
     let stripeHostedInvoiceUrl: string | null = null;
     if (stripeInvoiceId) {
       try {
-        stripeHostedInvoiceUrl = (await stripe.invoices.retrieve(stripeInvoiceId)).hosted_invoice_url ?? null;
+        stripeHostedInvoiceUrl = (await getStripe().invoices.retrieve(stripeInvoiceId)).hosted_invoice_url ?? null;
       } catch (err) {
         console.error('[PaymentsService] Could not load Stripe invoice', stripeInvoiceId, err);
       }
@@ -306,9 +319,12 @@ export class PaymentsService {
    * Handles a signed Stripe webhook
    */
   public static async processPaymentWebhook(rawBody: Buffer, signature: string, ip: string): Promise<{ status: string }> {
+    const webhookSecret = config.stripe.webhookSecret;
+    if (!webhookSecret) throw new Error('PAYMENTS_NOT_CONFIGURED');
+
     let event: Stripe.Event;
     try {
-      event = stripe.webhooks.constructEvent(rawBody, signature, config.stripe.webhookSecret);
+      event = getStripe().webhooks.constructEvent(rawBody, signature, webhookSecret);
     } catch (err: any) {
       AuditService.logEvent({
         eventType: 'SUSPICIOUS_WEBHOOK_REJECTED',

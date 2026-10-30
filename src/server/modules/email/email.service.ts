@@ -16,12 +16,30 @@ import {
   escapeHtml,
 } from './email-templates.ts';
 import { AuditService } from '../audit/audit.service.ts';
+import { SettingsService } from '../settings/settings.service.ts';
 
-const transporter = nodemailer.createTransport({
-  host: config.smtp.host,
-  port: config.smtp.port,
-  secure: config.smtp.secure,
-  auth: { user: config.smtp.user, pass: config.smtp.pass },
+// The transporter is rebuilt on demand from the current config, so SMTP changes made in the
+// admin panel work without a restart (SettingsService.onChange below drops the cached one).
+let transporter: nodemailer.Transporter | null = null;
+let transporterSignature = '';
+
+function getTransporter(): nodemailer.Transporter {
+  const signature = [config.smtp.host, config.smtp.port, config.smtp.secure, config.smtp.user, config.smtp.pass].join('|');
+  if (!transporter || signature !== transporterSignature) {
+    transporter = nodemailer.createTransport({
+      host: config.smtp.host,
+      port: config.smtp.port,
+      secure: config.smtp.secure,
+      auth: { user: config.smtp.user, pass: config.smtp.pass },
+    });
+    transporterSignature = signature;
+  }
+  return transporter;
+}
+
+SettingsService.onChange(() => {
+  transporter = null;
+  transporterSignature = '';
 });
 
 function formatDateRo(date: Date): string {
@@ -46,8 +64,9 @@ export class EmailService {
    * Test current SMTP configuration and verify handshake
    */
   public static async verifySmtp(): Promise<{ ok: boolean; message: string }> {
+    if (!config.smtp.host) return { ok: false, message: 'SMTP nu este configurat.' };
     try {
-      await transporter.verify();
+      await getTransporter().verify();
       return { ok: true, message: `Conexiune SMTP stabilită cu succes către ${config.smtp.host}:${config.smtp.port}.` };
     } catch (err: any) {
       return { ok: false, message: `Eroare conexiune SMTP: ${err.message}` };
@@ -71,7 +90,9 @@ export class EmailService {
     let metadata = params.metadata || {};
 
     try {
-      const info = await transporter.sendMail({
+      // Unconfigured SMTP must not break signup/purchase flows: the email is logged as FAILED
+      if (!config.smtp.host) throw new Error('SMTP nu este configurat.');
+      const info = await getTransporter().sendMail({
         from: config.smtp.from,
         to: params.to,
         subject: params.subject,

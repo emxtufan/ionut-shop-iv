@@ -19,6 +19,7 @@ import { PlaybackController } from './src/server/modules/playback/playback.contr
 import { PaymentsService } from './src/server/modules/payments/payments.service.ts';
 import { EmailService } from './src/server/modules/email/email.service.ts';
 import { AdminController, THUMBNAILS_DIR } from './src/server/modules/admin/admin.controller.ts';
+import { SettingsService } from './src/server/modules/settings/settings.service.ts';
 import { db, ensureAdminUser } from './src/server/db/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,9 @@ app.post(
       );
       return res.json({ received: true, ...result });
     } catch (err: any) {
+      if (err.message === 'PAYMENTS_NOT_CONFIGURED') {
+        return res.status(503).json({ error: 'PAYMENTS_NOT_CONFIGURED', message: 'Plățile nu sunt configurate încă.' });
+      }
       if (err.message !== 'INVALID_WEBHOOK_SIGNATURE') console.error('[Webhook] Processing failed:', err);
       return res.status(400).json({ error: 'WEBHOOK_FAILED', message: err.message });
     }
@@ -172,6 +176,9 @@ app.post('/api/payments/checkout/:videoId', authenticate, async (req: Request, r
     });
     return res.json(result);
   } catch (err: any) {
+    if (err.message === 'PAYMENTS_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PAYMENTS_NOT_CONFIGURED', message: 'Plățile nu sunt configurate încă.' });
+    }
     const messages: Record<string, string> = {
       TERMS_NOT_ACCEPTED: 'Trebuie să accepți Termenii și renunțarea la dreptul de retragere.',
       VIDEO_NOT_FOUND: 'Videoclipul nu este disponibil pentru achiziție.',
@@ -191,6 +198,9 @@ app.post('/api/payments/verify-stripe-session', authenticate, async (req: Reques
     const result = await PaymentsService.verifyAndFulfillStripeSession(sessionId, (req as any).user.id, req.ip || 'unknown');
     return res.json(result);
   } catch (err: any) {
+    if (err.message === 'PAYMENTS_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'PAYMENTS_NOT_CONFIGURED', message: 'Plățile nu sunt configurate încă.' });
+    }
     console.error('[Checkout] Session verification failed:', err);
     return res.status(400).json({ success: false, message: 'Nu s-a putut verifica plata. Dacă ai fost taxat, accesul se activează automat în câteva minute.' });
   }
@@ -265,6 +275,8 @@ app.all('/api/*', (req: Request, res: Response) => {
 async function bootstrapServer() {
   await fs.promises.mkdir(THUMBNAILS_DIR, { recursive: true });
   await db.$connect();
+  // Admin overrides (DB) are applied over the env values before anything starts serving
+  await SettingsService.load();
   await ensureAdminUser();
 
   if (!config.isProduction) {

@@ -9,14 +9,24 @@ import type { Readable } from 'stream';
 import { config } from '../../config.ts';
 import { db } from '../../db/index.ts';
 
-const API = `https://video.bunnycdn.com/library/${config.bunny.libraryId}/videos`;
+const API_BASE = 'https://video.bunnycdn.com/library';
 
 // Bunny VideoModel.status: 0 Created, 1 Uploaded, 2 Processing, 3 Transcoding, 4 Finished, 5 Error, 6 UploadFailed
 const FINISHED = 4;
 const FAILED = [5, 6];
 
+/** Reads the current config, so a library/key saved from the admin panel is used immediately */
+function configured(): boolean {
+  return Boolean(config.bunny.libraryId && config.bunny.apiKey && config.bunny.tokenKey);
+}
+
+function ensureConfigured(): void {
+  if (!configured()) throw new Error('BUNNY_NOT_CONFIGURED');
+}
+
 async function call(path: string, init: RequestInit & { duplex?: 'half' } = {}): Promise<any> {
-  const res = await fetch(`${API}${path}`, {
+  ensureConfigured();
+  const res = await fetch(`${API_BASE}/${config.bunny.libraryId}/videos${path}`, {
     ...init,
     headers: { AccessKey: config.bunny.apiKey, accept: 'application/json', ...init.headers },
   });
@@ -27,6 +37,11 @@ async function call(path: string, init: RequestInit & { duplex?: 'half' } = {}):
 }
 
 export class BunnyService {
+  /** True when library id, API key and token key are all set */
+  public static isConfigured(): boolean {
+    return configured();
+  }
+
   /** Creates an empty video entry and returns its GUID */
   public static async createVideo(title: string): Promise<string> {
     const video = await call('', {
@@ -63,6 +78,7 @@ export class BunnyService {
 
   /** Signed embed URL: token = SHA256_HEX(token_security_key + video_id + expires) */
   public static embedUrl(guid: string, expires: number): string {
+    ensureConfigured();
     const token = crypto.createHash('sha256').update(`${config.bunny.tokenKey}${guid}${expires}`).digest('hex');
     return `https://player.mediadelivery.net/embed/${config.bunny.libraryId}/${guid}?token=${token}&expires=${expires}&autoplay=true&showSpeed=true`;
   }

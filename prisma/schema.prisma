@@ -270,3 +270,13 @@ model EmailLog {
 
   @@index([sentAt])
 }
+
+// Admin-editable setting; overrides the matching environment variable at runtime.
+// Secret values are stored AES-256-GCM encrypted (see modules/settings/settings.service.ts).
+model Setting {
+  key       String   @id
+  value     String
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
