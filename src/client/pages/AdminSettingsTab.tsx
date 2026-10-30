@@ -18,7 +18,7 @@ interface SettingView {
   value: string | null;
   isSet: boolean;
   preview: string | null;
-  source: 'admin' | 'env' | 'none';
+  source: 'admin' | 'env' | 'default' | 'none';
 }
 
 interface Infrastructure {
@@ -155,6 +155,7 @@ function toStoredValue(key: string, input: string): string {
 function sourceTag(source: SettingView['source']) {
   if (source === 'admin') return <Tag color="blue">Admin</Tag>;
   if (source === 'env') return <Tag color="gold">.env</Tag>;
+  if (source === 'default') return <Tag>Implicit</Tag>;
   return <Tag>Necompletat</Tag>;
 }
 
@@ -435,14 +436,14 @@ export const AdminSettingsTab: React.FC = () => {
             {sourceTag(setting.source)}
             {setting.source === 'admin' && (
               <Popconfirm
-                title="Revii la valoarea din .env?"
-                description="Valoarea salvată din panou este ștearsă; se folosește valoarea din .env."
+                title="Revii la valoarea inițială?"
+                description="Valoarea salvată din panou este ștearsă; se folosește valoarea din .env sau cea implicită."
                 okText="Revino"
                 cancelText="Anulează"
                 onConfirm={() => handleRevert(field.key)}
               >
                 <Button type="text" size="small" className="text-[11px] text-muted px-1 h-6">
-                  Revino la .env
+                  Revino la valoarea inițială
                 </Button>
               </Popconfirm>
             )}

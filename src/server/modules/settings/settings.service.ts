@@ -19,6 +19,11 @@ export interface SettingDef {
   key: string;
   secret: boolean;
   group: SettingGroup;
+  /**
+   * Value the key currently has inside `config`. Read once, before the overrides are applied,
+   * so it is the real default declared in config.ts (used when there is no env variable).
+   */
+  read?(): string;
   /** Receives the effective value (override or, when null was written, the env value). */
   apply(value: string): void;
   /** Returns a Romanian error message, or null when the value is valid. */
@@ -32,14 +37,35 @@ export interface SettingView {
   value: string | null;
   isSet: boolean;
   preview: string | null;
-  source: 'admin' | 'env' | 'none';
+  source: 'admin' | 'env' | 'default' | 'none';
 }
 
 /** Environment values captured at startup, used whenever an override is removed. */
 const ENV: Record<string, string> = {};
 
+/**
+ * Values read from `config` before the first override is applied, i.e. the real defaults
+ * declared in config.ts. An override removal with no environment variable falls back to
+ * these, so the key keeps its default instead of ending up empty.
+ */
+const DEFAULTS: Record<string, string> = {};
+let defaultsCaptured = false;
+
+function captureDefaults(): void {
+  if (defaultsCaptured) return;
+  for (const def of SETTING_DEFS) {
+    if (def.read) DEFAULTS[def.key] = def.read();
+  }
+  defaultsCaptured = true;
+}
+
 function envValue(key: string): string {
   return ENV[key] ?? '';
+}
+
+/** What removing an override restores: the environment value, else the default from config. */
+function fallbackValue(key: string): string {
+  return envValue(key) || DEFAULTS[key] || '';
 }
 
 function senderAddress(): string {
@@ -114,6 +140,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'MAX_CONCURRENT_STREAMS',
     secret: false,
     group: 'video',
+    read: () => String(config.maxConcurrentStreams),
     apply: value => {
       config.maxConcurrentStreams = value ? Number(value) : 1;
     },
@@ -123,6 +150,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'WATERMARK_TEXT',
     secret: false,
     group: 'video',
+    read: () => config.watermark.text,
     apply: value => {
       config.watermark.text = value || 'ivconcept.ro';
     },
@@ -136,6 +164,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'WATERMARK_INTERVAL_SECONDS',
     secret: false,
     group: 'video',
+    read: () => String(config.watermark.intervalSeconds),
     apply: value => {
       config.watermark.intervalSeconds = value ? Number(value) : 5;
     },
@@ -173,6 +202,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'STRIPE_CURRENCY',
     secret: false,
     group: 'payments',
+    read: () => config.stripe.currency,
     apply: value => {
       config.stripe.currency = (value || 'RON').toUpperCase();
     },
@@ -197,6 +227,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'SMTP_PORT',
     secret: false,
     group: 'email',
+    read: () => String(config.smtp.port),
     apply: value => {
       config.smtp.port = value ? Number(value) : 587;
     },
@@ -206,6 +237,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'SMTP_SECURE',
     secret: false,
     group: 'email',
+    read: () => String(config.smtp.secure),
     apply: value => {
       config.smtp.secure = value ? value.toLowerCase() === 'true' : config.smtp.port === 465;
     },
@@ -284,6 +316,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'VAT_RATE',
     secret: false,
     group: 'company',
+    read: () => String(config.company.vatRate),
     apply: value => {
       config.company.vatRate = value ? Number(value) : 0.21;
     },
@@ -298,6 +331,7 @@ export const SETTING_DEFS: SettingDef[] = [
     key: 'INVOICE_SERIES',
     secret: false,
     group: 'company',
+    read: () => config.company.invoiceSeries,
     apply: value => {
       config.company.invoiceSeries = value || 'CNV';
     },
@@ -368,6 +402,10 @@ export class SettingsService {
    * An undecryptable secret is logged (without its value) and left on the env value.
    */
   public static async load(): Promise<void> {
+    // Snapshot of the config values before any override is applied: removing an override
+    // has to restore exactly this state (env value, or the default from config.ts)
+    captureDefaults();
+
     const rows = await db.setting.findMany();
     const byKey = new Map(rows.map(row => [row.key, row]));
 
@@ -388,7 +426,7 @@ export class SettingsService {
         }
       }
 
-      def.apply(value ?? envValue(def.key));
+      def.apply(value ?? fallbackValue(def.key));
     }
   }
 
@@ -412,14 +450,23 @@ export class SettingsService {
         }
       }
 
+      const fallback = fallbackValue(def.key);
+      const source: SettingView['source'] = row
+        ? 'admin'
+        : envValue(def.key)
+          ? 'env'
+          : fallback
+            ? 'default'
+            : 'none';
+
       return {
         key: def.key,
         group: def.group,
         secret: def.secret,
-        value: def.secret ? null : row ? row.value : envValue(def.key),
-        isSet: Boolean(row),
+        value: def.secret ? null : row ? row.value : fallback,
+        isSet: Boolean(row) || source === 'default',
         preview,
-        source: row ? ('admin' as const) : envValue(def.key) ? ('env' as const) : ('none' as const),
+        source,
       };
     });
   }
@@ -478,7 +525,7 @@ export class SettingsService {
 
     // Applied only after the transaction succeeded, so a failed save changes nothing in memory
     for (const { def, value } of ops) {
-      def.apply(value ?? envValue(def.key));
+      def.apply(value ?? fallbackValue(def.key));
     }
 
     for (const listener of [...this.listeners]) {
