@@ -135,6 +135,39 @@ const CARDS: CardDef[] = [
       { key: 'WATERMARK_INTERVAL_SECONDS', label: 'Interval watermark (secunde)', placeholder: '5' },
     ],
   },
+  {
+    key: 'fgo',
+    title: 'Facturare FGO',
+    help: 'FGO → Setări eCommerce → API. Adresa platformei trebuie înregistrată în FGO, iar cheia API și codul unic se copiază din contul FGO.',
+    fields: [
+      { key: 'FGO_ENABLED', label: 'Facturare prin FGO', type: 'switch' },
+      {
+        key: 'FGO_API_URL',
+        label: 'Adresa API',
+        placeholder: 'https://api.fgo.ro',
+        help: 'Pentru testare: https://api-testuat.fgo.ro',
+      },
+      { key: 'FGO_API_KEY', label: 'Cheie API', type: 'password' },
+      { key: 'FGO_COD_UNIC', label: 'Cod unic', help: 'Doar cifre, fără RO.' },
+      {
+        key: 'FGO_PLATFORM_URL',
+        label: 'Adresa platformei',
+        placeholder: 'https://shop.ivconcept.ro',
+        help: 'Adresa trebuie înregistrată în FGO la Setări eCommerce → API.',
+      },
+      { key: 'FGO_SERIES', label: 'Serie factură' },
+      { key: 'FGO_STORNO_SERIES', label: 'Serie storno (opțional)' },
+      {
+        key: 'FGO_LAST_NUMBER',
+        label: 'Ultimul număr de factură emis',
+        help: 'Numărul la care ai rămas. Următoarea factură primește numărul +1. Gol = FGO alocă numărul din registru.',
+      },
+      { key: 'FGO_INVOICE_TYPE', label: 'Tip factură', placeholder: 'F' },
+      { key: 'FGO_PAYMENT_TYPE', label: 'Tip plată', placeholder: 'Banca', help: 'Chitanta, Bon sau Banca.' },
+      { key: 'FGO_UM', label: 'Unitate de măsură', placeholder: 'buc' },
+      { key: 'FGO_SEND_SPV', label: 'Trimite factura în SPV', type: 'switch' },
+    ],
+  },
 ];
 
 // The stored VAT rate is a fraction (0.21); the field shows a percentage (21)
@@ -363,6 +396,19 @@ export const AdminSettingsTab: React.FC = () => {
   const webhookUrl = stripeTest?.details?.webhookUrl as string | undefined;
   const webhookConfigured = stripeTest?.details?.webhookConfigured as boolean | undefined;
 
+  const fgoEnabled = (byKey['FGO_ENABLED']?.value || '').toLowerCase() === 'true';
+  const fgoMissing = [
+    byKey['FGO_API_KEY']?.isSet ? '' : 'cheia API',
+    (byKey['FGO_COD_UNIC']?.value || '').trim() ? '' : 'codul unic',
+    (byKey['FGO_SERIES']?.value || '').trim() ? '' : 'seria',
+  ].filter(Boolean);
+  const fgoState: LaunchState = fgoEnabled && fgoMissing.length === 0 ? 'ok' : 'fail';
+  const fgoHint = !fgoEnabled
+    ? 'Facturarea FGO este dezactivată.'
+    : fgoMissing.length
+      ? `Lipsește ${fgoMissing.join(', ')}.`
+      : 'Facturarea FGO este configurată.';
+
   const launchItems: { label: string; state: LaunchState; hint: string }[] = [
     {
       label: 'Adresă site',
@@ -395,6 +441,11 @@ export const AdminSettingsTab: React.FC = () => {
       label: 'Email',
       state: smtpTest ? (smtpTest.ok ? 'ok' : 'fail') : 'pending',
       hint: smtpTest?.message || 'Se verifică serverul SMTP.',
+    },
+    {
+      label: 'Facturare FGO',
+      state: fgoState,
+      hint: fgoHint,
     },
   ];
 

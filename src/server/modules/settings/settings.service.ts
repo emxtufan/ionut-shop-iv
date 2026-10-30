@@ -13,7 +13,8 @@ import path from 'path';
 import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
 
-export type SettingGroup = 'site' | 'video' | 'payments' | 'email' | 'company';
+export type SettingGroup = 'site' | 'video' | 'payments' | 'email' | 'company' | 'fgo';
+
 
 export interface SettingDef {
   key: string;
@@ -83,6 +84,15 @@ function intInRange(min: number, max: number, message: string) {
     if (!isInteger(value) || Number(value) < min || Number(value) > max) return message;
     return null;
   };
+}
+
+/** Tipurile de plată acceptate de FGO pentru facturile emise din platformă. */
+const FGO_PAYMENT_TYPES = ['Chitanta', 'Bon', 'Banca'];
+
+function trueFalse(value: string): string | null {
+  const lower = value.toLowerCase();
+  if (lower !== 'true' && lower !== 'false') return 'Valoarea trebuie să fie true sau false.';
+  return null;
 }
 
 export const SETTING_DEFS: SettingDef[] = [
@@ -336,6 +346,153 @@ export const SETTING_DEFS: SettingDef[] = [
       config.company.invoiceSeries = value || 'CNV';
     },
     validate: () => null,
+  },
+
+  // --- Facturare FGO (facturi fiscale emise prin API-ul FGO) -----------------
+  {
+    key: 'FGO_ENABLED',
+    secret: false,
+    group: 'fgo',
+    read: () => String(config.fgo.enabled),
+    apply: value => {
+      config.fgo.enabled = value ? value.toLowerCase() === 'true' : false;
+    },
+    validate: value => (value ? trueFalse(value) : null),
+  },
+  {
+    key: 'FGO_API_URL',
+    secret: false,
+    group: 'fgo',
+    read: () => config.fgo.apiUrl,
+    apply: value => {
+      config.fgo.apiUrl = value || 'https://api.fgo.ro';
+    },
+    validate: value => {
+      if (!value) return null;
+      // Testarea se face pe https://api-testuat.fgo.ro; http://localhost e acceptat pentru teste locale
+      if (!/^https:\/\//i.test(value) && !/^http:\/\/localhost(:\d+)?(\/|$)/i.test(value)) {
+        return 'Trebuie să înceapă cu https:// (sau http://localhost pentru teste).';
+      }
+      try {
+        new URL(value);
+      } catch {
+        return 'Trebuie să fie un URL valid (ex: https://api.fgo.ro).';
+      }
+      return null;
+    },
+  },
+  {
+    key: 'FGO_API_KEY',
+    secret: true,
+    group: 'fgo',
+    apply: value => {
+      config.fgo.apiKey = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'FGO_COD_UNIC',
+    secret: false,
+    group: 'fgo',
+    apply: value => {
+      config.fgo.codUnic = value;
+    },
+    validate: value => {
+      if (!value) return null;
+      if (!isInteger(value)) return 'Trebuie să conțină doar cifre, fără RO.';
+      return null;
+    },
+  },
+  {
+    key: 'FGO_PLATFORM_URL',
+    secret: false,
+    group: 'fgo',
+    read: () => config.fgo.platformUrl,
+    apply: value => {
+      config.fgo.platformUrl = value || config.appUrl;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'FGO_SERIES',
+    secret: false,
+    group: 'fgo',
+    apply: value => {
+      config.fgo.series = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'FGO_STORNO_SERIES',
+    secret: false,
+    group: 'fgo',
+    apply: value => {
+      config.fgo.stornoSeries = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'FGO_LAST_NUMBER',
+    secret: false,
+    group: 'fgo',
+    apply: value => {
+      config.fgo.lastNumber = value;
+    },
+    validate: value => {
+      if (!value) return null;
+      if (!isInteger(value)) return 'Trebuie să conțină doar cifre.';
+      return null;
+    },
+  },
+  {
+    key: 'FGO_INVOICE_TYPE',
+    secret: false,
+    group: 'fgo',
+    read: () => config.fgo.invoiceType,
+    apply: value => {
+      config.fgo.invoiceType = value || 'F';
+    },
+    validate: () => null,
+  },
+  {
+    key: 'FGO_PAYMENT_TYPE',
+    secret: false,
+    group: 'fgo',
+    read: () => config.fgo.paymentType,
+    apply: value => {
+      config.fgo.paymentType = FGO_PAYMENT_TYPES.find(type => type.toLowerCase() === value.toLowerCase()) || 'Banca';
+    },
+    validate: value => {
+      if (!value) return null;
+      if (!FGO_PAYMENT_TYPES.some(type => type.toLowerCase() === value.toLowerCase())) {
+        return 'Trebuie să fie Chitanta, Bon sau Banca.';
+      }
+      return null;
+    },
+  },
+  {
+    key: 'FGO_UM',
+    secret: false,
+    group: 'fgo',
+    read: () => config.fgo.um,
+    apply: value => {
+      config.fgo.um = value || 'buc';
+    },
+    validate: value => {
+      if (!value) return null;
+      if (value.length > 5) return 'Poate avea cel mult 5 caractere.';
+      return null;
+    },
+  },
+  {
+    key: 'FGO_SEND_SPV',
+    secret: false,
+    group: 'fgo',
+    read: () => String(config.fgo.sendSpv),
+    apply: value => {
+      config.fgo.sendSpv = value ? value.toLowerCase() === 'true' : true;
+    },
+    validate: value => (value ? trueFalse(value) : null),
   },
 ];
 

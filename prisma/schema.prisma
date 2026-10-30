@@ -162,6 +162,7 @@ model Payment {
   amount            Decimal       @db.Decimal(10, 2)
   currency          String        @default("RON")
   status            PaymentStatus @default(PENDING)
+  billing           Json? // buyer details filled at checkout (BillingDetails in src/types/billing.ts)
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -251,10 +252,39 @@ model Invoice {
   stripeHostedInvoiceUrl String?
   issuedAt               DateTime @default(now())
 
+  // --- Facturare FGO ----------------------------------------------------------
+  buyerType              String?
+  buyerCui               String?
+  buyerRegCom            String?
+  buyerCountry           String?
+  buyerCounty            String?
+  buyerCity              String?
+  buyerAddress           String?
+  buyerPhone             String?
+  fgoStatus              String? // null = FGO inactiv la creare; PENDING | DONE | FAILED
+  fgoSerie               String?
+  fgoNumar               String?
+  fgoPdfUrl              String?
+  fgoError               String?
+  fgoWarning             String?
+  fgoAttempts            Int      @default(0)
+  fgoNextAttemptAt       DateTime?
+  fgoPaidAt              DateTime?
+  fgoSpvAt               DateTime?
+  invoiceEmailedAt       DateTime?
+  fgoStornoWanted        Boolean  @default(false)
+  fgoStornoSerie         String?
+  fgoStornoNumar         String?
+  fgoStornoPdfUrl        String?
+  fgoStornoDoneAt        DateTime?
+  stornoEmailedAt        DateTime?
+
   purchase Purchase @relation(fields: [purchaseId], references: [id])
   user     User     @relation(fields: [userId], references: [id])
 
+  @@unique([fgoSerie, fgoNumar])
   @@index([userId])
+  @@index([fgoStatus, fgoNextAttemptAt])
 }
 
 model EmailLog {

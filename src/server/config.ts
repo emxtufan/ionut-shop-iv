@@ -23,6 +23,8 @@ function optional(name: string, fallback: string): string {
 
 const smtpPort = Number(optional('SMTP_PORT', '587'));
 
+const appUrl = optional('APP_URL', '').replace(/\/$/, '');
+
 // COMPANY_EMAIL is optional: fall back to the bare address inside SMTP_FROM
 // ("Firma <noreply@domeniu.ro>" -> "noreply@domeniu.ro"; a bare address stays as it is)
 const smtpFromRaw = (process.env.SMTP_FROM || '').trim();
@@ -36,7 +38,7 @@ export const config = {
   port: Number(optional('PORT', '3000')),
   // Number of reverse proxies in front of the app (nginx, Cloudflare...). Used to read the real client IP.
   trustProxyHops: Number(optional('TRUST_PROXY_HOPS', '0')),
-  appUrl: optional('APP_URL', '').replace(/\/$/, ''),
+  appUrl,
   uploadDir: path.resolve(optional('UPLOAD_DIR', './storage')),
   maxConcurrentStreams: Number(optional('MAX_CONCURRENT_STREAMS', '1')),
 
@@ -81,6 +83,25 @@ export const config = {
     email: optional('COMPANY_EMAIL', smtpFromEmail),
     vatRate: Number(optional('VAT_RATE', '0.21')),
     invoiceSeries: optional('INVOICE_SERIES', 'CNV'),
+  },
+
+  // Facturare FGO (facturile fiscale se emit prin API-ul FGO)
+  fgo: {
+    enabled: optional('FGO_ENABLED', 'false').toLowerCase() === 'true',
+    apiUrl: optional('FGO_API_URL', 'https://api.fgo.ro'),
+    apiKey: optional('FGO_API_KEY', ''),
+    // Codul unic al firmei din FGO, doar cifre (fără prefixul RO)
+    codUnic: optional('FGO_COD_UNIC', ''),
+    // Adresa platformei, așa cum este înregistrată în FGO (Setări eCommerce -> API)
+    platformUrl: optional('FGO_PLATFORM_URL', appUrl),
+    series: optional('FGO_SERIES', ''),
+    stornoSeries: optional('FGO_STORNO_SERIES', ''),
+    // Ultimul număr de factură emis; gol = FGO alocă numărul din registrul lui
+    lastNumber: optional('FGO_LAST_NUMBER', ''),
+    invoiceType: optional('FGO_INVOICE_TYPE', 'F'),
+    paymentType: optional('FGO_PAYMENT_TYPE', 'Banca'),
+    um: optional('FGO_UM', 'buc'),
+    sendSpv: optional('FGO_SEND_SPV', 'true').toLowerCase() !== 'false',
   },
 
   // Used once, on startup, to create the first SUPER_ADMIN if no admin exists
