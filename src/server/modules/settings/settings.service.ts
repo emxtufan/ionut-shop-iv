@@ -10,6 +10,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import type { Prisma } from '@prisma/client';
 import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
 
@@ -701,6 +702,40 @@ export class SettingsService {
         console.error('[SettingsService] A settings change listener failed:', err);
       }
     }
+  }
+
+  /**
+   * Writes one setting from internal code (not the admin panel), e.g. the FGO invoice counter.
+   * Pass the transaction client when the write belongs to a bigger transaction: the live `config`
+   * is then only changed by `applyInternal`, after the commit, so a rollback changes nothing.
+   */
+  public static async storeInternal(
+    key: string,
+    value: string,
+    tx: Prisma.TransactionClient | null = null,
+    actorId: string | null = null
+  ): Promise<void> {
+    const def = DEF_BY_KEY.get(key);
+    if (!def) throw new Error(`Setare necunoscută: ${key}`);
+
+    const trimmed = String(value).trim();
+    const message = def.validate(trimmed);
+    if (message) throw new Error(message);
+
+    const stored = def.secret ? encrypt(trimmed) : trimmed;
+    await (tx ?? db).setting.upsert({
+      where: { key },
+      create: { key, value: stored, isSecret: def.secret, updatedBy: actorId },
+      update: { value: stored, isSecret: def.secret, updatedBy: actorId },
+    });
+
+    // Nothing to wait for without a transaction
+    if (!tx) def.apply(trimmed);
+  }
+
+  /** Applies a value written with `storeInternal` to the live `config`, after its commit. */
+  public static applyInternal(key: string, value: string): void {
+    DEF_BY_KEY.get(key)?.apply(value);
   }
 
   /** Registers a callback run after every successful save (used to reset cached clients). */

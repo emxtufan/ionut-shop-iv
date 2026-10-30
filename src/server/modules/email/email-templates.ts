@@ -65,6 +65,17 @@ export interface PasswordResetEmailData {
   expiresInMinutes?: number;
 }
 
+export interface FgoInvoiceEmailData {
+  isStorno: boolean;
+  invoiceNumber: string;
+  buyerName: string;
+  total: number;
+  currency: string;
+  issuedAt: string;
+  pdfUrl: string;
+  appUrl: string;
+}
+
 /**
  * Base Apple-style email container with crisp typography, dark mode / high contrast and zero visual slop
  */
@@ -476,6 +487,61 @@ export function generatePasswordResetEmail(data: PasswordResetEmailData): { subj
     `Linkul expiră în ${expiresInMinutes} minute și poate fi folosit o singură dată.\n` +
     `Dacă nu ai solicitat resetarea parolei, ignoră acest email.\n\n` +
     `${company.name}`;
+
+  return { subject, html, text };
+}
+
+/**
+ * 5. FGO Fiscal Invoice / Storno Email (PDF-ul fiscal emis de FGO)
+ */
+export function generateFgoInvoiceEmail(data: FgoInvoiceEmailData): { subject: string; html: string; text: string } {
+  const label = data.isStorno ? 'Factură storno' : 'Factura';
+  const subject = `${label} ${data.invoiceNumber} — ${company.name}`;
+  const total = `${data.total.toFixed(2)} ${data.currency}`;
+
+  const body = `
+    <div class="stripe-badge">${data.isStorno ? 'Factură Storno' : 'Factură Fiscală'}</div>
+    <h1>${escapeHtml(label)} ${escapeHtml(data.invoiceNumber)}</h1>
+    <p>
+      ${data.isStorno
+        ? 'Factura inițială a fost stornată. Documentul emis de FGO este atașat acestui email.'
+        : 'Factura fiscală a fost emisă. Documentul emis de FGO este atașat acestui email.'}
+      ${data.pdfUrl ? 'Îl poți descărca oricând și cu butonul de mai jos.' : ''}
+    </p>
+
+    <div class="highlight-box">
+      <div class="item-row">
+        <span class="item-label">Cumpărător</span>
+        <span class="item-value" style="text-align: right; max-width: 60%;">${escapeHtml(data.buyerName)}</span>
+      </div>
+      <div class="item-row">
+        <span class="item-label">Număr document</span>
+        <span class="item-value" style="font-family: monospace; font-size: 12px;">${escapeHtml(data.invoiceNumber)}</span>
+      </div>
+      <div class="item-row">
+        <span class="item-label">Total (TVA inclus)</span>
+        <span class="item-value" style="font-size: 16px; font-weight: 700; color: #3f6b35;">${escapeHtml(total)}</span>
+      </div>
+      <div class="item-row">
+        <span class="item-label">Data emiterii</span>
+        <span class="item-value">${escapeHtml(data.issuedAt)}</span>
+      </div>
+    </div>
+    ${data.pdfUrl ? `
+    <div class="cta-container">
+      <a href="${escapeHtml(data.pdfUrl)}" class="cta-button">Descarcă factura PDF</a>
+    </div>` : ''}
+  `;
+
+  const html = wrapHtmlTemplate(`${label} ${data.invoiceNumber}`, body, data.appUrl);
+
+  const text = `${label} ${data.invoiceNumber}\n` +
+    `${company.name} (CIF ${company.cif})\n\n` +
+    `Cumpărător: ${data.buyerName}\n` +
+    `Data emiterii: ${data.issuedAt}\n` +
+    `Total (TVA inclus): ${total}\n` +
+    (data.pdfUrl ? `Descarcă factura: ${data.pdfUrl}\n` : '') +
+    `\n${company.name}`;
 
   return { subject, html, text };
 }

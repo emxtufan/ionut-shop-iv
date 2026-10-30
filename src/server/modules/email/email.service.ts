@@ -14,6 +14,7 @@ import {
   generatePurchaseEmail,
   generateStripeInvoiceEmail,
   generatePasswordResetEmail,
+  generateFgoInvoiceEmail,
   escapeHtml,
 } from './email-templates.ts';
 import { AuditService } from '../audit/audit.service.ts';
@@ -45,6 +46,13 @@ SettingsService.onChange(() => {
 
 function formatDateRo(date: Date): string {
   return date.toLocaleDateString('ro-RO', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Attachment name with only [A-Za-z0-9_-], so no mail client mangles it. */
+function pdfFileName(serie: string, numar: string): string {
+  const clean = (value: string) => String(value ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  const number = [clean(serie), clean(numar)].filter(Boolean).join('-');
+  return `Factura-${number || 'FGO'}.pdf`;
 }
 
 export class EmailService {
@@ -85,6 +93,8 @@ export class EmailService {
     type: EmailType;
     metadata?: Record<string, any>;
     logHtml?: string; // replaces the body stored in EmailLog (for emails carrying secrets)
+    /** Files sent with the email; they are never written to EmailLog */
+    attachments?: { filename: string; content: Buffer; contentType: string }[];
   }): Promise<EmailLog> {
     let status: 'SENT' | 'FAILED' = 'SENT';
     let error: string | null = null;
@@ -99,6 +109,7 @@ export class EmailService {
         subject: params.subject,
         text: params.text,
         html: params.html,
+        attachments: params.attachments,
       });
       metadata = { ...metadata, messageId: info.messageId };
     } catch (err: any) {
