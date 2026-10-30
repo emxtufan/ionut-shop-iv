@@ -121,10 +121,12 @@ app.post('/api/payments/checkout/:videoId', authenticate, async (req: Request, r
       videoId: req.params.videoId,
       ip: req.ip || 'unknown',
       userAgent: req.headers['user-agent'] || 'Unknown',
+      acceptedTerms: req.body?.acceptedTerms,
     });
     return res.json(result);
   } catch (err: any) {
     const messages: Record<string, string> = {
+      TERMS_NOT_ACCEPTED: 'Trebuie să accepți Termenii și renunțarea la dreptul de retragere.',
       VIDEO_NOT_FOUND: 'Videoclipul nu este disponibil pentru achiziție.',
       ALREADY_PURCHASED: 'Deții deja acest videoclip.',
     };

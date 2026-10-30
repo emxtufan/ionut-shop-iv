@@ -1,0 +1,270 @@
+// ==============================================================================
+// CineVault VOD - PostgreSQL Database Schema
+// Apply with: npx prisma migrate deploy (production) / npx prisma migrate dev (first setup)
+// ==============================================================================
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum VideoStatus {
+  UPLOADING  // created, video file not uploaded yet
+  PROCESSING // uploaded to Bunny Stream, being transcoded
+  READY      // transcoded, can be played
+  FAILED     // Bunny could not process the file, upload it again
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CHARGEBACK
+}
+
+enum EntitlementStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum PlaybackSessionStatus {
+  ACTIVE
+  ENDED
+  TERMINATED_CONCURRENT_LIMIT
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum EmailStatus {
+  SENT
+  FAILED
+}
+
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  username            String    @unique
+  passwordHash        String
+  role                Role      @default(USER)
+  isSuspended         Boolean   @default(false)
+  suspendedReason     String?
+  failedLoginAttempts Int       @default(0)
+  lockoutUntil        DateTime?
+  lastLoginAt         DateTime?
+  lastLoginIp         String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  sessions         Session[]
+  purchases        Purchase[]
+  entitlements     Entitlement[]
+  playbackSessions PlaybackSession[]
+  auditLogs        AuditLog[]
+  invoices         Invoice[]
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  token        String   @unique
+  ip           String
+  userAgent    String
+  deviceType   String
+  expiresAt    DateTime
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playbackSessions PlaybackSession[]
+
+  @@index([userId])
+}
+
+model Category {
+  id          String  @id @default(uuid())
+  slug        String  @unique
+  name        String
+  description String?
+  videos      Video[]
+}
+
+model Video {
+  id              String      @id @default(uuid())
+  title           String
+  slug            String      @unique
+  description     String
+  categoryId      String
+  category        Category    @relation(fields: [categoryId], references: [id])
+  tags            String[]
+  priceAmount     Decimal     @db.Decimal(10, 2)
+  currency        String      @default("RON")
+  durationSeconds Int         @default(0)
+  thumbnailUrl    String      @default("")
+  bunnyVideoId    String?     @unique // Bunny Stream video GUID
+  status          VideoStatus @default(UPLOADING)
+  isPublished     Boolean     @default(false)
+  publishedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  purchases        Purchase[]
+  entitlements     Entitlement[]
+  playbackSessions PlaybackSession[]
+
+  @@index([categoryId])
+  @@index([isPublished, status])
+}
+
+model Purchase {
+  id                 String        @id @default(uuid())
+  userId             String
+  videoId            String
+  paymentId          String?       @unique
+  amount             Decimal       @db.Decimal(10, 2)
+  currency           String        @default("RON")
+  status             PaymentStatus @default(PENDING)
+  withdrawalWaiverAt DateTime? // momentul acceptării Termenilor și al renunțării la dreptul de retragere
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  video       Video        @relation(fields: [videoId], references: [id])
+  payment     Payment?     @relation(fields: [paymentId], references: [id])
+  entitlement Entitlement?
+  invoice     Invoice?
+
+  @@index([userId])
+  @@index([videoId])
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  checkoutSessionId String        @unique // Stripe cs_...
+  paymentIntentId   String?       @unique // Stripe pi_..., known after payment
+  userId            String
+  videoId           String
+  amount            Decimal       @db.Decimal(10, 2)
+  currency          String        @default("RON")
+  status            PaymentStatus @default(PENDING)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  purchase Purchase?
+}
+
+model Entitlement {
+  id            String            @id @default(uuid())
+  userId        String
+  videoId       String
+  purchaseId    String?           @unique
+  status        EntitlementStatus @default(ACTIVE)
+  grantedAt     DateTime          @default(now())
+  revokedAt     DateTime?
+  revokedReason String?
+
+  user     User      @relation(fields: [userId], references: [id])
+  video    Video     @relation(fields: [videoId], references: [id])
+  purchase Purchase? @relation(fields: [purchaseId], references: [id])
+
+  @@unique([userId, videoId])
+  @@index([videoId])
+}
+
+model PlaybackSession {
+  id              String                @id @default(uuid())
+  userId          String
+  videoId         String
+  sessionId       String
+  jtiNonce        String                @unique
+  startedAt       DateTime              @default(now())
+  lastHeartbeatAt DateTime              @default(now())
+  endedAt         DateTime?
+  ip              String
+  userAgent       String
+  status          PlaybackSessionStatus @default(ACTIVE)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video   Video   @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model AuditLog {
+  id         String        @id @default(uuid())
+  eventType  String
+  severity   AuditSeverity @default(INFO)
+  userId     String?
+  adminId    String?
+  videoId    String?
+  purchaseId String?
+  ip         String
+  userAgent  String
+  device     String?
+  metadata   Json?
+  createdAt  DateTime      @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([eventType])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Invoice {
+  id                     String   @id @default(uuid())
+  // ponytail: Postgres sequence, can skip a number if a transaction rolls back; use a locked counter row if your accountant requires strictly gapless numbering
+  seq                    Int      @unique @default(autoincrement())
+  invoiceNumber          String?  @unique
+  purchaseId             String   @unique
+  userId                 String
+  buyerName              String
+  buyerEmail             String
+  sellerName             String
+  sellerCif              String
+  sellerAddress          String
+  items                  Json
+  subtotal               Decimal  @db.Decimal(10, 2)
+  taxRate                Decimal  @db.Decimal(5, 4)
+  taxAmount              Decimal  @db.Decimal(10, 2)
+  totalAmount            Decimal  @db.Decimal(10, 2)
+  currency               String
+  status                 String   @default("PAID") // PAID | REFUNDED
+  stripePaymentIntentId  String?
+  stripeInvoiceId        String?
+  stripeHostedInvoiceUrl String?
+  issuedAt               DateTime @default(now())
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model EmailLog {
+  id       String      @id @default(uuid())
+  to       String
+  subject  String
+  type     String
+  status   EmailStatus
+  error    String?
+  html     String
+  metadata Json?
+  sentAt   DateTime    @default(now())
+
+  @@index([sentAt])
+}
