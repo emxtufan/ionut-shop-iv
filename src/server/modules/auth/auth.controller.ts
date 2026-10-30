@@ -92,6 +92,50 @@ export class AuthController {
   }
 
   /**
+   * Signed-in password change: the current password is required, the new one has 8-128 chars
+   */
+  public static async changePassword(req: Request, res: Response) {
+    const user = (req as any).user;
+    const session = (req as any).session;
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        error: 'MISSING_FIELDS',
+        message: 'Introduceți parola actuală și parola nouă.',
+      });
+    }
+
+    try {
+      await AuthService.changePassword({
+        userId: user.id,
+        currentPassword,
+        newPassword,
+        sessionId: session.id,
+        ip: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'] || 'Unknown',
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Parola a fost schimbată. Celelalte dispozitive au fost deconectate.',
+      });
+    } catch (err: any) {
+      const messageMap: Record<string, string> = {
+        INVALID_PASSWORD: 'Parola actuală este incorectă.',
+        PASSWORD_TOO_SHORT: 'Parola nouă trebuie să aibă minim 8 caractere.',
+        PASSWORD_TOO_LONG: 'Parola nouă poate avea maxim 128 de caractere.',
+      };
+      if (!messageMap[err.message]) console.error('[AuthController] changePassword failed:', err);
+      return res.status(400).json({
+        error: err.message,
+        message: messageMap[err.message] || 'Schimbarea parolei a eșuat.',
+      });
+    }
+  }
+
+  /**
    * Always answers 200 with the same message, so the endpoint cannot be used to enumerate accounts
    */
   public static async forgotPassword(req: Request, res: Response) {

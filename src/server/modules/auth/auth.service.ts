@@ -263,6 +263,56 @@ export class AuthService {
   }
 
   /**
+   * Changes the password of the signed-in account. The current password must match, the new
+   * one is stored as a fresh hash and every other session is signed out; the session that
+   * made the change stays valid.
+   */
+  public static async changePassword(params: {
+    userId: string;
+    currentPassword: string;
+    newPassword: string;
+    sessionId: string;
+    ip: string;
+    userAgent: string;
+  }): Promise<void> {
+    const user = await db.user.findUnique({ where: { id: params.userId } });
+    if (!user) throw new Error('USER_NOT_FOUND');
+
+    if (!verifyPassword(params.currentPassword, user.passwordHash)) {
+      throw new Error('INVALID_PASSWORD');
+    }
+
+    if (params.newPassword.length < 8) {
+      throw new Error('PASSWORD_TOO_SHORT');
+    }
+
+    if (params.newPassword.length > 128) {
+      throw new Error('PASSWORD_TOO_LONG');
+    }
+
+    const passwordHash = hashPassword(params.newPassword);
+
+    const sessionsInvalidated = await db.$transaction(async tx => {
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash } });
+
+      // Every other device is signed out; the current session keeps working
+      const { count } = await tx.session.deleteMany({
+        where: { userId: user.id, id: { not: params.sessionId } },
+      });
+      return count;
+    });
+
+    AuditService.logEvent({
+      eventType: 'PASSWORD_CHANGED',
+      severity: 'CRITICAL',
+      userId: user.id,
+      ip: params.ip,
+      userAgent: params.userAgent,
+      metadata: { sessionsInvalidated },
+    });
+  }
+
+  /**
    * Starts the password reset flow. Never throws for an unknown account and never
    * reveals whether the email exists (the response time is kept constant).
    */

@@ -20,6 +20,7 @@ import { PaymentsService } from './src/server/modules/payments/payments.service.
 import { EmailService } from './src/server/modules/email/email.service.ts';
 import { AdminController, THUMBNAILS_DIR } from './src/server/modules/admin/admin.controller.ts';
 import { SettingsService } from './src/server/modules/settings/settings.service.ts';
+import { SettingsController } from './src/server/modules/settings/settings.controller.ts';
 import { db, ensureAdminUser } from './src/server/db/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,8 @@ const ah =
     Promise.resolve(fn(req, res, next)).catch(next);
 
 const admin = [authenticate, requireRole('ADMIN', 'SUPER_ADMIN')];
+// Settings hold secrets (API keys, SMTP password): SUPER_ADMIN only
+const superAdmin = [authenticate, requireRole('SUPER_ADMIN')];
 
 // Stripe webhook needs the raw body for signature verification, so it goes before express.json()
 app.post(
@@ -108,6 +111,7 @@ app.get('/api/videos', optionalAuthenticate, ah(VideosController.getVideos));
 app.get('/api/videos/:id', optionalAuthenticate, ah(VideosController.getVideoById));
 app.get('/api/library', authenticate, ah(VideosController.getLibrary));
 app.get('/api/account/purchases', authenticate, ah(VideosController.getPurchases));
+app.post('/api/account/change-password', authenticate, authLimiter, ah(AuthController.changePassword));
 
 // Printable invoice (opens a print-ready page)
 app.get('/api/account/invoices/:id/print', authenticate, ah(async (req: Request, res: Response) => {
@@ -249,6 +253,16 @@ app.post('/api/admin/smtp/test-email', ...admin, ah(async (req: Request, res: Re
   const log = await EmailService.sendTestEmail(targetEmail, adminUser.username);
   return res.json({ success: log.status === 'SENT', log, error: log.error });
 }));
+
+// -----------------------------------------------------------------------------
+// Admin settings (SUPER_ADMIN only, values include secrets)
+// -----------------------------------------------------------------------------
+app.get('/api/admin/settings', ...superAdmin, ah(SettingsController.getSettings));
+app.put('/api/admin/settings', ...superAdmin, ah(SettingsController.updateSettings));
+app.post('/api/admin/settings/test/bunny', ...superAdmin, ah(SettingsController.testBunny));
+app.post('/api/admin/settings/test/stripe', ...superAdmin, ah(SettingsController.testStripe));
+app.post('/api/admin/settings/test/smtp', ...superAdmin, ah(SettingsController.testSmtp));
+app.post('/api/admin/settings/stripe-webhook', ...superAdmin, ah(SettingsController.createStripeWebhook));
 
 // -----------------------------------------------------------------------------
 // Error handler: log server-side, never leak stack traces
