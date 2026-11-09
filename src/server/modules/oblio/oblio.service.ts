@@ -17,7 +17,6 @@ import type { BillingDetails } from '../../../types/billing.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
 
-const BASE_URL = 'https://www.oblio.eu/api';
 /** Oblio accepts roughly one request per second: keep a hard minimum between two calls. */
 const MIN_CALL_INTERVAL_MS = 1000;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -255,7 +254,7 @@ async function addWarning(invoice: Invoice, message: string): Promise<void> {
 }
 
 function oblioUrl(path: string): string {
-  return `${BASE_URL}${path}`;
+  return `${config.oblio.apiUrl}${path}`;
 }
 
 /**

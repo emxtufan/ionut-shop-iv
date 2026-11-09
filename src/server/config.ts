@@ -107,6 +107,8 @@ export const config = {
   // Facturare Oblio (al doilea furnizor de facturare; se folosește exclusiv cu FGO)
   oblio: {
     enabled: optional('OBLIO_ENABLED', 'false').toLowerCase() === 'true',
+    // Baza URL a API-ului Oblio; se poate schimba doar din env (nu din panoul de admin)
+    apiUrl: optional('OBLIO_API_URL', 'https://www.oblio.eu/api'),
     email: optional('OBLIO_EMAIL', ''),
     secret: optional('OBLIO_SECRET', ''),
     // CIF-ul firmei din Oblio (opțional cu prefixul RO)
