@@ -4,6 +4,8 @@
 
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+import fs from 'fs';
+import path from 'path';
 import type { EmailLog, Invoice, Purchase, Video } from '@prisma/client';
 import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
@@ -59,6 +61,12 @@ function pdfFileName(serie: string, numar: string): string {
   return `Factura-${number || 'FGO'}.pdf`;
 }
 
+// The layout logo is inlined with every email; resolved once, skipped when the file is missing
+const EMAIL_LOGO_PATH = path.resolve('public/logo.png');
+const EMAIL_LOGO_ATTACHMENT = fs.existsSync(EMAIL_LOGO_PATH)
+  ? { filename: 'logo.png', path: EMAIL_LOGO_PATH, cid: 'logo@ivconcept' }
+  : null;
+
 export class EmailService {
   /**
    * Safe public configuration inspection (no password)
@@ -107,13 +115,18 @@ export class EmailService {
     try {
       // Unconfigured SMTP must not break signup/purchase flows: the email is logged as FAILED
       if (!config.smtp.host) throw new Error('SMTP nu este configurat.');
+      // Caller files (PDF) are kept as they are, the layout logo is always appended inline
+      const attachments = [
+        ...(params.attachments ?? []),
+        ...(EMAIL_LOGO_ATTACHMENT ? [EMAIL_LOGO_ATTACHMENT] : []),
+      ];
       const info = await getTransporter().sendMail({
         from: config.smtp.from,
         to: params.to,
         subject: params.subject,
         text: params.text,
         html: params.html,
-        attachments: params.attachments,
+        attachments,
       });
       metadata = { ...metadata, messageId: info.messageId };
     } catch (err: any) {

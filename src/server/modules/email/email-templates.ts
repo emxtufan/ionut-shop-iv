@@ -237,6 +237,77 @@ function wrapHtmlTemplate(title: string, bodyContent: string, appUrl: string): s
 </html>`;
 }
 
+export interface LayoutButton {
+  label: string;
+  url: string;
+}
+
+export interface LayoutOptions {
+  title: string;
+  intro: string;
+  button?: LayoutButton;
+  body?: string;
+  footerNote: string;
+  infoBox?: string;
+}
+
+const EMAIL_FONT = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+/**
+ * Shared email layout: white card (max 560px) on a light page, centered text, table-based and
+ * fully inline-styled so Gmail / Outlook render it without an external stylesheet.
+ * The logo is attached inline by the email service under the cid used below.
+ */
+export function renderLayout({ title, intro, button, body, footerNote, infoBox }: LayoutOptions): string {
+  const buttonHtml = button
+    ? `
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto 8px;">
+                <tr>
+                  <td bgcolor="#7B5A3C" style="border-radius:10px;">
+                    <a href="${escapeHtml(button.url)}" style="display:inline-block;padding:14px 28px;font-size:17px;font-weight:600;color:#ffffff;text-decoration:none;font-family:${EMAIL_FONT};">${escapeHtml(button.label)}</a>
+                  </td>
+                </tr>
+              </table>`
+    : '';
+
+  const bodyHtml = body
+    ? `
+              ${body}`
+    : '';
+
+  const infoBoxHtml = infoBox
+    ? `
+              <div style="background-color:#f2f2f4;border-radius:12px;padding:24px;font-size:13px;line-height:1.6;color:#888888;margin-top:32px;">${infoBox}</div>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f8f8f8;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8f8f8;">
+    <tr>
+      <td align="center" style="padding:48px 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:560px;background-color:#ffffff;border:1px solid #e5e5e5;border-radius:24px;">
+          <tr>
+            <td style="padding:56px 40px;text-align:center;font-family:${EMAIL_FONT};">
+              <img src="cid:logo@ivconcept" width="96" height="96" alt="IVconcept" style="display:block;margin:0 auto 32px;border:0">
+              <h1 style="font-size:28px;font-weight:700;color:#111111;letter-spacing:-0.5px;margin:0 0 16px;">${escapeHtml(title)}</h1>
+              <p style="font-size:17px;line-height:1.6;color:#444444;margin:0 0 32px;">${escapeHtml(intro)}</p>${buttonHtml}${bodyHtml}${infoBoxHtml}
+              <p style="font-size:15px;line-height:1.6;color:#555555;margin:40px 0 0;">${escapeHtml(footerNote)}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
 /**
  * 1. Welcome & Account Creation Template
  */
@@ -501,41 +572,44 @@ export function generateFgoInvoiceEmail(data: FgoInvoiceEmailData): { subject: s
   const subject = `${label} ${data.invoiceNumber} — ${company.name}`;
   const total = `${data.total.toFixed(2)} ${data.currency}`;
 
-  const body = `
-    <div class="stripe-badge">${data.isStorno ? 'Factură Storno' : 'Factură Fiscală'}</div>
-    <h1>${escapeHtml(label)} ${escapeHtml(data.invoiceNumber)}</h1>
-    <p>
-      ${data.isStorno
-        ? 'Factura inițială a fost stornată. Documentul emis de FGO este atașat acestui email.'
-        : 'Factura fiscală a fost emisă. Documentul emis de FGO este atașat acestui email.'}
-      ${data.pdfUrl ? 'Îl poți descărca oricând și cu butonul de mai jos.' : ''}
-    </p>
+  const intro = `${data.isStorno
+    ? 'Factura inițială a fost stornată. Documentul emis de FGO este atașat acestui email.'
+    : 'Factura fiscală a fost emisă. Documentul emis de FGO este atașat acestui email.'}${data.pdfUrl ? ' Îl poți descărca oricând și cu butonul de mai jos.' : ''}`;
 
-    <div class="highlight-box">
-      <div class="item-row">
-        <span class="item-label">Cumpărător</span>
-        <span class="item-value" style="text-align: right; max-width: 60%;">${escapeHtml(data.buyerName)}</span>
-      </div>
-      <div class="item-row">
-        <span class="item-label">Număr document</span>
-        <span class="item-value" style="font-family: monospace; font-size: 12px;">${escapeHtml(data.invoiceNumber)}</span>
-      </div>
-      <div class="item-row">
-        <span class="item-label">Total (TVA inclus)</span>
-        <span class="item-value" style="font-size: 16px; font-weight: 700; color: #3f6b35;">${escapeHtml(total)}</span>
-      </div>
-      <div class="item-row">
-        <span class="item-label">Data emiterii</span>
-        <span class="item-value">${escapeHtml(data.issuedAt)}</span>
-      </div>
-    </div>
-    ${data.pdfUrl ? `
-    <div class="cta-container">
-      <a href="${escapeHtml(data.pdfUrl)}" class="cta-button">Descarcă factura PDF</a>
-    </div>` : ''}
-  `;
+  const body = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:15px;line-height:1.6;color:#444444;text-align:left;">
+                <tr>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Cumpărător</td>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;">${escapeHtml(data.buyerName)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Număr document</td>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;font-family:monospace;">${escapeHtml(data.invoiceNumber)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Total (TVA inclus)</td>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;font-weight:700;">${escapeHtml(total)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;border-bottom:1px solid #e5e5e5;color:#888888;">Data emiterii</td>
+                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;border-bottom:1px solid #e5e5e5;text-align:right;color:#111111;">${escapeHtml(data.issuedAt)}</td>
+                </tr>
+              </table>`;
 
-  const html = wrapHtmlTemplate(`${label} ${data.invoiceNumber}`, body, data.appUrl);
+  // Company details in the info box, only the ones configured in the admin panel
+  const companyLines = [
+    escapeHtml(company.name),
+    company.cif ? `CUI: ${escapeHtml(company.cif)}` : '',
+    escapeHtml(company.address),
+  ].filter(Boolean);
+
+  const html = renderLayout({
+    title: `${label} ${data.invoiceNumber}`,
+    intro,
+    button: data.pdfUrl ? { label: 'Descarcă factura PDF', url: data.pdfUrl } : undefined,
+    body,
+    footerNote: 'Acest email a fost trimis automat de către platforma IV Concept VOD.',
+    infoBox: companyLines.length ? companyLines.join('<br>') : undefined,
+  });
 
   const text = `${label} ${data.invoiceNumber}\n` +
     `${company.name} (CIF ${company.cif})\n\n` +
