@@ -302,7 +302,7 @@ export class EmailService {
    * Renders the printable HTML of an invoice (same template as the email)
    */
   public static renderInvoiceHtml(invoice: Invoice, videoTitle: string): string {
-    return generateStripeInvoiceEmail({
+    const { html } = generateStripeInvoiceEmail({
       invoiceNumber: invoice.invoiceNumber || '',
       userName: invoice.buyerName,
       userEmail: invoice.buyerEmail,
@@ -317,7 +317,10 @@ export class EmailService {
       issuedAt: formatDateRo(invoice.issuedAt),
       status: invoice.status,
       appUrl: config.appUrl,
-    }).html;
+    });
+
+    // The printable page is served in the browser, where cid: references do not resolve
+    return html.replaceAll('cid:logo@ivconcept', '/logo.png');
   }
 
   /**
