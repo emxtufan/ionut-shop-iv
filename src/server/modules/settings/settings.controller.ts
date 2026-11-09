@@ -12,6 +12,7 @@ import { config } from '../../config.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
 import { FgoService } from '../fgo/fgo.service.ts';
+import { OblioService } from '../oblio/oblio.service.ts';
 import { PaymentsService } from '../payments/payments.service.ts';
 import { SettingsService } from './settings.service.ts';
 
@@ -203,6 +204,25 @@ export class SettingsController {
       return res.json(await FgoService.testConnection());
     } catch (err: any) {
       return res.json({ ok: false, message: `FGO nu a putut fi verificat: ${safeErrorMessage(err)}` });
+    }
+  }
+
+  /**
+   * Reads the Oblio token and the series nomenclature with the stored credentials
+   */
+  public static async testOblio(req: Request, res: Response) {
+    const { email, secret, cif } = config.oblio;
+    if (!email || !secret || !cif) {
+      return res.json({
+        ok: false,
+        message: 'Oblio nu este configurat: completează emailul, secretul și CIF-ul firmei.',
+      });
+    }
+
+    try {
+      return res.json(await OblioService.testConnection());
+    } catch (err: any) {
+      return res.json({ ok: false, message: `Oblio nu a putut fi verificat: ${safeErrorMessage(err)}` });
     }
   }
 

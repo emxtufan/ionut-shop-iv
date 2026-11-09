@@ -113,9 +113,11 @@ export class PaymentsService {
             data: { withdrawalWaiverAt: acceptedAt },
           });
           // The buyer may have corrected the billing details in the meantime
+          const previousBilling = pendingPayment.billing;
           await db.payment.update({ where: { id: pendingPayment.id }, data: { billing: params.billing } });
-          // A payment without a proforma yet gets one now, as on the first try
-          if (config.oblio.enabled) void OblioService.createProforma(pendingPayment.id);
+          // A payment without a proforma yet gets one now, as on the first try; a payment whose
+          // billing changed gets the old proforma replaced
+          if (config.oblio.enabled) void OblioService.replaceProforma(pendingPayment.id, previousBilling);
 
           AuditService.logEvent({
             eventType: 'PURCHASE_STARTED',
@@ -314,8 +316,9 @@ export class PaymentsService {
           buyerCity: billing?.city ?? null,
           buyerAddress: billing?.address ?? null,
           buyerPhone: billing?.phone ?? null,
-          // PENDING = the fiscal invoice is issued by FGO from the queue, not here
-          fgoStatus: config.fgo.enabled ? 'PENDING' : null,
+          // PENDING = the fiscal invoice is issued by the selected provider from the queue, not here
+          fgoStatus: (config.fgo.enabled || config.oblio.enabled) ? 'PENDING' : null,
+          invoiceProvider: config.oblio.enabled ? 'OBLIO' : config.fgo.enabled ? 'FGO' : null,
           sellerName: config.company.name,
           sellerCif: config.company.cif,
           sellerAddress: config.company.address,

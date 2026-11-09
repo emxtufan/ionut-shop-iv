@@ -282,6 +282,7 @@ app.post('/api/admin/settings/test/bunny', ...superAdmin, ah(SettingsController.
 app.post('/api/admin/settings/test/stripe', ...superAdmin, ah(SettingsController.testStripe));
 app.post('/api/admin/settings/test/smtp', ...superAdmin, ah(SettingsController.testSmtp));
 app.post('/api/admin/settings/test/fgo', ...superAdmin, ah(SettingsController.testFgo));
+app.post('/api/admin/settings/test/oblio', ...superAdmin, ah(SettingsController.testOblio));
 app.post('/api/admin/settings/stripe-webhook', ...superAdmin, ah(SettingsController.createStripeWebhook));
 
 // -----------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 // ==============================================================================
 
 import type { Invoice, Payment, Prisma } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { db } from '../../db/index.ts';
 import { COUNTRIES, RO_COUNTIES } from '../../../types/billing.ts';
@@ -117,6 +118,15 @@ function vatPayerFlag(cif: string | null | undefined): number {
 function readBilling(value: Prisma.JsonValue | null | undefined): BillingDetails | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as unknown as BillingDetails;
+}
+
+/**
+ * Short, stable fingerprint of the billing JSON. It goes into the idempotency key, so a
+ * checkout repeated with the same details reuses the proforma, while corrected details
+ * ask Oblio for a new one.
+ */
+function billingHash(value: Prisma.JsonValue | null | undefined): string {
+  return createHash('sha1').update(JSON.stringify(value ?? null)).digest('hex').slice(0, 8);
 }
 
 /** Same rule as blocksRealInvoice in the FGO client: a test payment never reaches SPV (ANAF). */
@@ -404,7 +414,7 @@ export class OblioService {
         precision: 2,
         mentions: `Comanda ${payment.id}`,
         // ponytail: semantica nu e documentată de Oblio, de verificat la primul test
-        idempotencyKey: `pf-${payment.id}`,
+        idempotencyKey: `pf-${payment.id}-${billingHash(payment.billing)}`,
       };
 
       const data = await request('POST', '/docs/proforma', { json: body });
@@ -435,6 +445,53 @@ export class OblioService {
       });
     } catch (err: any) {
       console.warn(`[OblioService] Proforma for payment ${paymentId} was not issued:`, err?.message);
+    }
+  }
+
+  /**
+   * A checkout started again with other billing details: the proforma issued for the old
+   * details is cancelled and a new one is issued. Like createProforma, it never throws:
+   * a proforma Oblio refuses must not block the payment.
+   */
+  public static async replaceProforma(
+    paymentId: string,
+    oldBilling: Prisma.JsonValue | null | undefined
+  ): Promise<void> {
+    if (!config.oblio.enabled || !config.oblio.proformaSeries) return;
+
+    try {
+      const payment = await db.payment.findUnique({ where: { id: paymentId } });
+      if (!payment) return;
+
+      // Same details and the proforma is already issued for them: nothing to replace
+      const unchanged = billingHash(payment.billing) === billingHash(oldBilling);
+      if (unchanged && payment.proformaSerie) return;
+
+      // The old proforma is abandoned first: best effort, a refusal only leaves a warning
+      if (payment.proformaSerie && payment.proformaNumar && !payment.proformaCanceledAt) {
+        try {
+          await request('PUT', '/docs/proforma/cancel', {
+            form: { cif: config.oblio.cif, seriesName: payment.proformaSerie, number: payment.proformaNumar },
+          });
+        } catch (err: any) {
+          console.warn(
+            `[OblioService] Proforma ${payment.proformaSerie}-${payment.proformaNumar} could not be cancelled before being replaced:`,
+            err?.message
+          );
+        }
+      }
+
+      // Without this reset createProforma would see the old proforma and skip the new one
+      if (payment.proformaSerie || payment.proformaNumar || payment.proformaPdfUrl || payment.proformaCanceledAt) {
+        await db.payment.update({
+          where: { id: payment.id },
+          data: { proformaSerie: null, proformaNumar: null, proformaPdfUrl: null, proformaCanceledAt: null },
+        });
+      }
+
+      await OblioService.createProforma(payment.id);
+    } catch (err: any) {
+      console.warn(`[OblioService] Proforma for payment ${paymentId} was not replaced:`, err?.message);
     }
   }
 
