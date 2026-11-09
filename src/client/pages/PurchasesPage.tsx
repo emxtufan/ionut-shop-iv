@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Tag, Button, Modal, Input, Empty, Skeleton, message } from 'antd';
-import { FileTextOutlined, PrinterOutlined, CheckCircleOutlined, DownloadOutlined, DeleteOutlined } from '@ant-design/icons';
+import { FileTextOutlined, PrinterOutlined, DownloadOutlined, DeleteOutlined } from '@ant-design/icons';
 import { Purchase } from '../../types/index.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { ChangePasswordForm } from '../components/ChangePasswordForm.tsx';
@@ -207,10 +207,6 @@ export const PurchasesPage: React.FC<PurchasesPageProps> = ({ purchasesVersion }
           <p className="text-xs text-muted mt-1">
             Facturi fiscale digitale emise automat și confirmări de plată Stripe pentru {user.email}.
           </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted bg-ink/[0.03] border border-ink/10 px-3 py-1.5 rounded-lg">
-          <CheckCircleOutlined className="text-emerald-700" />
-          <span>Confirmare automată prin SMTP</span>
         </div>
       </div>
 
