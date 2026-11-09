@@ -14,7 +14,7 @@ import type { Prisma } from '@prisma/client';
 import { db } from '../../db/index.ts';
 import { config } from '../../config.ts';
 
-export type SettingGroup = 'site' | 'video' | 'payments' | 'email' | 'company' | 'fgo';
+export type SettingGroup = 'site' | 'video' | 'payments' | 'email' | 'company' | 'fgo' | 'oblio';
 
 
 export interface SettingDef {
@@ -89,6 +89,18 @@ function intInRange(min: number, max: number, message: string) {
 
 /** Tipurile de plată acceptate de FGO pentru facturile emise din platformă. */
 const FGO_PAYMENT_TYPES = ['Chitanta', 'Bon', 'Banca'];
+
+/** Tipurile de încasare acceptate de Oblio pentru facturile emise din platformă. */
+const OBLIO_COLLECT_TYPES = ['Card', 'Alta incasare banca', 'Ordin de plata'];
+
+/** O adresă de email validă sau gol (câmpul e opțional). */
+function emailOrEmpty(value: string): string | null {
+  if (!value) return null;
+  if (value.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    return 'Trebuie să fie o adresă de email validă.';
+  }
+  return null;
+}
 
 function trueFalse(value: string): string | null {
   const lower = value.toLowerCase();
@@ -370,7 +382,13 @@ export const SETTING_DEFS: SettingDef[] = [
     apply: value => {
       config.fgo.enabled = value ? value.toLowerCase() === 'true' : false;
     },
-    validate: value => (value ? trueFalse(value) : null),
+    validate: value => {
+      if (!value) return null;
+      const invalid = trueFalse(value);
+      if (invalid) return invalid;
+      if (value.toLowerCase() === 'true' && config.oblio.enabled) return 'Dezactivează întâi Oblio';
+      return null;
+    },
   },
   {
     key: 'FGO_API_URL',
@@ -504,6 +522,120 @@ export const SETTING_DEFS: SettingDef[] = [
     read: () => String(config.fgo.sendSpv),
     apply: value => {
       config.fgo.sendSpv = value ? value.toLowerCase() === 'true' : true;
+    },
+    validate: value => (value ? trueFalse(value) : null),
+  },
+
+  // --- Facturare Oblio (al doilea furnizor, exclusiv cu FGO) -----------------
+  {
+    key: 'OBLIO_ENABLED',
+    secret: false,
+    group: 'oblio',
+    read: () => String(config.oblio.enabled),
+    apply: value => {
+      config.oblio.enabled = value ? value.toLowerCase() === 'true' : false;
+    },
+    validate: value => {
+      if (!value) return null;
+      const invalid = trueFalse(value);
+      if (invalid) return invalid;
+      if (value.toLowerCase() === 'true' && config.fgo.enabled) return 'Dezactivează întâi FGO';
+      return null;
+    },
+  },
+  {
+    key: 'OBLIO_EMAIL',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      config.oblio.email = value;
+    },
+    validate: value => emailOrEmpty(value),
+  },
+  {
+    key: 'OBLIO_SECRET',
+    secret: true,
+    group: 'oblio',
+    apply: value => {
+      config.oblio.secret = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'OBLIO_CIF',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      config.oblio.cif = value;
+    },
+    validate: value => {
+      if (!value) return null;
+      if (!/^(RO)?\d+$/i.test(value)) return 'Trebuie să conțină doar cifre, eventual cu prefixul RO.';
+      return null;
+    },
+  },
+  {
+    key: 'OBLIO_SERIES',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      config.oblio.series = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'OBLIO_PROFORMA_SERIES',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      // Gol = nu se emit proforme
+      config.oblio.proformaSeries = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'OBLIO_STORNO_SERIES',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      // Gol = storno pe aceeași serie ca factura
+      config.oblio.stornoSeries = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'OBLIO_VAT_NAME',
+    secret: false,
+    group: 'oblio',
+    apply: value => {
+      // Gol = se trimite doar procentul de TVA
+      config.oblio.vatName = value;
+    },
+    validate: () => null,
+  },
+  {
+    key: 'OBLIO_COLLECT_TYPE',
+    secret: false,
+    group: 'oblio',
+    read: () => config.oblio.collectType,
+    apply: value => {
+      config.oblio.collectType = OBLIO_COLLECT_TYPES.find(type => type.toLowerCase() === value.toLowerCase()) || 'Card';
+    },
+    validate: value => {
+      if (!value) return null;
+      if (!OBLIO_COLLECT_TYPES.some(type => type.toLowerCase() === value.toLowerCase())) {
+        return 'Trebuie să fie Card, Alta incasare banca sau Ordin de plata.';
+      }
+      return null;
+    },
+  },
+  {
+    key: 'OBLIO_SEND_SPV',
+    secret: false,
+    group: 'oblio',
+    read: () => String(config.oblio.sendSpv),
+    apply: value => {
+      config.oblio.sendSpv = value ? value.toLowerCase() === 'true' : true;
     },
     validate: value => (value ? trueFalse(value) : null),
   },

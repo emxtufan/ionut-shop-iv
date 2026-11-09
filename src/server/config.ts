@@ -104,6 +104,24 @@ export const config = {
     sendSpv: optional('FGO_SEND_SPV', 'true').toLowerCase() !== 'false',
   },
 
+  // Facturare Oblio (al doilea furnizor de facturare; se folosește exclusiv cu FGO)
+  oblio: {
+    enabled: optional('OBLIO_ENABLED', 'false').toLowerCase() === 'true',
+    email: optional('OBLIO_EMAIL', ''),
+    secret: optional('OBLIO_SECRET', ''),
+    // CIF-ul firmei din Oblio (opțional cu prefixul RO)
+    cif: optional('OBLIO_CIF', ''),
+    series: optional('OBLIO_SERIES', ''),
+    // Gol = nu se emit proforme
+    proformaSeries: optional('OBLIO_PROFORMA_SERIES', ''),
+    // Gol = storno pe aceeași serie ca factura
+    stornoSeries: optional('OBLIO_STORNO_SERIES', ''),
+    // Gol = se trimite doar procentul de TVA
+    vatName: optional('OBLIO_VAT_NAME', ''),
+    collectType: optional('OBLIO_COLLECT_TYPE', 'Card'),
+    sendSpv: optional('OBLIO_SEND_SPV', 'true').toLowerCase() !== 'false',
+  },
+
   // Used once, on startup, to create the first SUPER_ADMIN if no admin exists
   admin: {
     email: (process.env.ADMIN_EMAIL || '').trim().toLowerCase(),

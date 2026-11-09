@@ -163,6 +163,10 @@ model Payment {
   currency          String        @default("RON")
   status            PaymentStatus @default(PENDING)
   billing           Json? // buyer details filled at checkout (BillingDetails in src/types/billing.ts)
+  proformaSerie      String? // proformă Oblio emisă la checkout
+  proformaNumar      String?
+  proformaPdfUrl     String?
+  proformaCanceledAt DateTime?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -253,6 +257,7 @@ model Invoice {
   issuedAt               DateTime @default(now())
 
   // --- Facturare FGO ----------------------------------------------------------
+  invoiceProvider        String? // FGO | OBLIO; coloanele fgo* țin starea facturii externe pentru ambii furnizori
   buyerType              String?
   buyerCui               String?
   buyerRegCom            String?
