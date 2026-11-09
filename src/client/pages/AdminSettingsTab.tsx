@@ -462,7 +462,7 @@ export const AdminSettingsTab: React.FC = () => {
     ? 'Facturarea Oblio este dezactivată.'
     : oblioTest?.message || 'Se verifică conexiunea Oblio.';
 
-  const launchItems: { label: string; state: LaunchState; hint: string }[] = [
+  const allLaunchItems: { label: string; state: LaunchState; hint: string }[] = [
     {
       label: 'Adresă site',
       state: siteIsHttps ? 'ok' : 'fail',
@@ -505,7 +505,9 @@ export const AdminSettingsTab: React.FC = () => {
       state: oblioState,
       hint: oblioHint,
     },
-  ].filter(
+  ];
+
+  const launchItems = allLaunchItems.filter(
     (item) =>
       // FGO și Oblio sunt exclusive: arătăm doar furnizorul activ.
       !(oblioEnabled && item.label === 'Facturare FGO') &&
