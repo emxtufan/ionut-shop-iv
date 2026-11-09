@@ -20,6 +20,13 @@ export function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Romanian money format used by every email: "49,00 RON".
+ */
+function formatMoney(amount: number, currency: string): string {
+  return `${amount.toLocaleString('ro-RO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
 export interface WelcomeEmailData {
   username: string;
   email: string;
@@ -134,7 +141,7 @@ export function renderLayout({ title, intro, button, body, footerNote, infoBox }
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:560px;background-color:#ffffff;border:1px solid #e5e5e5;border-radius:24px;">
           <tr>
             <td style="padding:56px 40px;text-align:center;font-family:${EMAIL_FONT};">
-              <img src="cid:logo@ivconcept" width="96" height="96" alt="IVconcept" style="display:block;margin:0 auto 32px;border:0">
+              <img src="cid:logo@ivconcept" width="96" height="96" alt="IVconcept" style="display:block;margin:0 auto 32px;border:0;border-radius:50%">
               <h1 style="font-size:28px;font-weight:700;color:#111111;letter-spacing:-0.5px;margin:0 0 16px;">${escapeHtml(title)}</h1>
               <p style="font-size:17px;line-height:1.6;color:#444444;margin:0 0 32px;">${escapeHtml(intro)}</p>${buttonHtml}${bodyHtml}
               <p style="font-size:15px;line-height:1.6;color:#555555;margin:40px 0 0;">${escapeHtml(footerNote)}</p>${infoBoxHtml}
@@ -154,7 +161,8 @@ export function renderLayout({ title, intro, button, body, footerNote, infoBox }
  */
 function contactEmail(): string {
   const raw = (config.company.email || config.smtp.from || '').trim();
-  return (raw.match(/<([^<>]+)>/)?.[1] || raw).trim();
+  const email = (raw.match(/<([^<>]+)>/)?.[1] || raw).trim();
+  return /no-?reply/i.test(email) ? '' : email;
 }
 
 /**
@@ -255,7 +263,7 @@ export function generateStripeInvoiceEmail(data: InvoiceEmailData): { subject: s
   const status = data.status === 'REFUNDED' ? 'Stornată' : 'Achitată';
 
   const title = 'Mulțumim pentru comandă! 🎬';
-  const intro = `Factura #${data.invoiceNumber}, în valoare de ${data.amount} ${data.currency}, a fost emisă pentru ${data.videoTitle}.`;
+  const intro = `Factura #${data.invoiceNumber}, în valoare de ${formatMoney(data.amount, data.currency)}, a fost emisă pentru ${data.videoTitle}.`;
   const button = { label: 'Vezi factura', url: `${data.appUrl}/?view=purchases` };
   const footerNote = defaultFooterNote();
 
@@ -264,9 +272,9 @@ export function generateStripeInvoiceEmail(data: InvoiceEmailData): { subject: s
     ['Film', data.videoTitle],
     ['Cumpărător', data.userName],
     ['Email', data.userEmail],
-    ['Subtotal', `${data.subtotal.toFixed(2)} ${data.currency}`],
-    [`TVA (${vatPercent}%)`, `${data.taxAmount.toFixed(2)} ${data.currency}`],
-    ['Total', `${data.amount} ${data.currency}`],
+    ['Subtotal', formatMoney(data.subtotal, data.currency)],
+    [`TVA (${vatPercent}%)`, formatMoney(data.taxAmount, data.currency)],
+    ['Total', formatMoney(data.amount, data.currency)],
     ['Data emiterii', data.issuedAt],
     ['Status', status],
   ];
@@ -312,7 +320,7 @@ export function generatePasswordResetEmail(data: PasswordResetEmailData): { subj
  * 5. Fiscal Invoice / Storno Email (the PDF issued for the purchase is attached)
  */
 export function generateFgoInvoiceEmail(data: FgoInvoiceEmailData): { subject: string; html: string; text: string } {
-  const total = `${data.total.toFixed(2)} ${data.currency}`;
+  const total = formatMoney(data.total, data.currency);
 
   const subject = data.isStorno
     ? `Factura de stornare ${data.invoiceNumber} · IVconcept`
