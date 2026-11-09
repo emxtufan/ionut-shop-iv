@@ -27,7 +27,6 @@ const PROFORMA_ABANDON_MS = 25 * 60 * 60 * 1000;
 /** The abandoned proformas are cancelled in small batches, one pass per timer tick. */
 const CANCEL_BATCH = 20;
 const UNIT = 'buc';
-const PRODUCT_TYPE = 'Serviciu';
 
 export interface OblioErrorDetails {
   message: string;
@@ -89,18 +88,29 @@ function itemName(invoice: Invoice): string {
   return (names.length ? names.join(', ') : 'Licență digitală streaming video').slice(0, 2000);
 }
 
-/** Oblio takes the country name; the checkout stores the ISO code (RO -> România). */
+/** Oblio refuses the diacritics in the country / state names: "România" is sent as "Romania". */
+function withoutDiacritics(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/** Oblio takes the country name; the checkout stores the ISO code (RO -> Romania). */
 function countryName(code: string | null | undefined): string | null {
   const value = String(code ?? '').trim();
   if (!value) return null;
-  return COUNTRIES.find(item => item.code === value.toUpperCase())?.name ?? value;
+  return withoutDiacritics(COUNTRIES.find(item => item.code === value.toUpperCase())?.name ?? value);
 }
 
-/** Oblio takes the county name; the checkout stores the code (CJ -> Cluj). */
-function countyName(code: string | null | undefined): string | null {
+/** Oblio takes the county name in the `state` field; the checkout stores the code (CJ -> Cluj). */
+function stateName(code: string | null | undefined): string | null {
   const value = String(code ?? '').trim();
   if (!value) return null;
-  return RO_COUNTIES.find(item => item.code === value.toUpperCase())?.name ?? value;
+  return withoutDiacritics(RO_COUNTIES.find(item => item.code === value.toUpperCase())?.name ?? value);
+}
+
+/** Oblio takes vatPayer = 1 only for a company whose CUI carries the RO prefix, otherwise 0. */
+function vatPayerFlag(cif: string | null | undefined): number {
+  const value = String(cif ?? '').replace(/\s+/g, '').toUpperCase();
+  return value.startsWith('RO') ? 1 : 0;
 }
 
 /** Billing details are validated before being saved; anything malformed is ignored here. */
@@ -124,8 +134,10 @@ function invoiceClient(invoice: Invoice): Record<string, any> {
     phone: invoice.buyerPhone,
     address: invoice.buyerAddress,
     city: invoice.buyerCity,
-    county: countyName(invoice.buyerCounty),
+    state: stateName(invoice.buyerCounty),
     country: countryName(invoice.buyerCountry),
+    vatPayer: vatPayerFlag(invoice.buyerCui),
+    save: 0,
   });
 }
 
@@ -140,8 +152,10 @@ function paymentClient(payment: Payment, email: string, fallbackName: string): R
     phone: billing?.phone || null,
     address: billing?.address || null,
     city: billing?.city || null,
-    county: countyName(billing?.county),
+    state: stateName(billing?.county),
     country: countryName(billing?.country),
+    vatPayer: vatPayerFlag(billing?.cui),
+    save: 0,
   });
 }
 
@@ -155,9 +169,9 @@ function invoiceProducts(invoice: Invoice): Record<string, any>[] {
       measuringUnit: UNIT,
       currency: invoice.currency,
       vatName: config.oblio.vatName || null,
-      vatRate: vatPercent(Number(invoice.taxRate)),
+      vatPercentage: vatPercent(Number(invoice.taxRate)),
       vatIncluded: false,
-      productType: PRODUCT_TYPE,
+      save: 0,
     }),
   ];
 }
@@ -176,9 +190,9 @@ function paymentProducts(payment: Payment, videoTitle: string): Record<string, a
       measuringUnit: UNIT,
       currency: payment.currency,
       vatName: config.oblio.vatName || null,
-      vatRate: vatPercent(rate),
+      vatPercentage: vatPercent(rate),
       vatIncluded: false,
-      productType: PRODUCT_TYPE,
+      save: 0,
     }),
   ];
 }
