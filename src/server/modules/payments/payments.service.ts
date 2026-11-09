@@ -9,6 +9,7 @@ import { config } from '../../config.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
 import { FgoService } from '../fgo/fgo.service.ts';
+import { OblioService } from '../oblio/oblio.service.ts';
 import { toPublicUser } from '../auth/auth.service.ts';
 import type { BillingDetails } from '../../../types/billing.ts';
 
@@ -113,6 +114,8 @@ export class PaymentsService {
           });
           // The buyer may have corrected the billing details in the meantime
           await db.payment.update({ where: { id: pendingPayment.id }, data: { billing: params.billing } });
+          // A payment without a proforma yet gets one now, as on the first try
+          if (config.oblio.enabled) void OblioService.createProforma(pendingPayment.id);
 
           AuditService.logEvent({
             eventType: 'PURCHASE_STARTED',
@@ -159,8 +162,8 @@ export class PaymentsService {
           },
         ],
         customer_email: user.email,
-        // With FGO the fiscal invoice is issued there; Stripe only collects the money
-        invoice_creation: { enabled: !config.fgo.enabled },
+        // With FGO or Oblio the fiscal invoice is issued there; Stripe only collects the money
+        invoice_creation: { enabled: !(config.fgo.enabled || config.oblio.enabled) },
         expires_at: (bucket + 1) * 60 + 1800,
         success_url: `${config.appUrl}/?session_id={CHECKOUT_SESSION_ID}&stripe_payment=success&video_id=${video.id}`,
         cancel_url: `${config.appUrl}/?stripe_payment=cancelled`,
@@ -185,6 +188,10 @@ export class PaymentsService {
     const payment = await db.payment.findUniqueOrThrow({ where: { checkoutSessionId: session.id } });
     await db.payment.update({ where: { id: payment.id }, data: { billing: params.billing } });
     await db.purchase.updateMany({ where: { paymentId: payment.id }, data: { withdrawalWaiverAt: acceptedAt } });
+
+    // With Oblio the proforma leaves while the buyer is still on Stripe; never awaited,
+    // because a proforma Oblio refuses must not block the payment
+    if (config.oblio.enabled) void OblioService.createProforma(payment.id);
 
     AuditService.logEvent({
       eventType: 'PURCHASE_STARTED',

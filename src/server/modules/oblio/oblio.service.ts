@@ -126,16 +126,17 @@ function stripeTestMode(): boolean {
 
 /** Buyer data, already validated and copied to the invoice by the checkout. */
 function invoiceClient(invoice: Invoice): Record<string, any> {
+  // The empty optional fields are undefined, never null: they never reach the JSON body
   return withoutEmpty({
     name: invoice.buyerName,
-    cif: invoice.buyerCui,
-    rc: invoice.buyerRegCom,
-    email: invoice.buyerEmail,
-    phone: invoice.buyerPhone,
-    address: invoice.buyerAddress,
-    city: invoice.buyerCity,
-    state: stateName(invoice.buyerCounty),
-    country: countryName(invoice.buyerCountry),
+    cif: invoice.buyerCui ?? undefined,
+    rc: invoice.buyerRegCom ?? undefined,
+    email: invoice.buyerEmail ?? undefined,
+    phone: invoice.buyerPhone ?? undefined,
+    address: invoice.buyerAddress ?? undefined,
+    city: invoice.buyerCity ?? undefined,
+    state: stateName(invoice.buyerCounty) ?? undefined,
+    country: countryName(invoice.buyerCountry) ?? undefined,
     vatPayer: vatPayerFlag(invoice.buyerCui),
     save: 0,
   });
@@ -144,16 +145,17 @@ function invoiceClient(invoice: Invoice): Record<string, any> {
 /** Buyer data from the checkout billing details: the proforma is issued before any invoice exists. */
 function paymentClient(payment: Payment, email: string, fallbackName: string): Record<string, any> {
   const billing = readBilling(payment.billing);
+  // The empty optional fields are undefined, never null: they never reach the JSON body
   return withoutEmpty({
     name: billing?.name || fallbackName,
-    cif: billing?.cui || null,
-    rc: billing?.regCom || null,
-    email: email || null,
-    phone: billing?.phone || null,
-    address: billing?.address || null,
-    city: billing?.city || null,
-    state: stateName(billing?.county),
-    country: countryName(billing?.country),
+    cif: billing?.cui || undefined,
+    rc: billing?.regCom || undefined,
+    email: email || undefined,
+    phone: billing?.phone || undefined,
+    address: billing?.address || undefined,
+    city: billing?.city || undefined,
+    state: stateName(billing?.county) ?? undefined,
+    country: countryName(billing?.country) ?? undefined,
     vatPayer: vatPayerFlag(billing?.cui),
     save: 0,
   });
@@ -168,9 +170,10 @@ function invoiceProducts(invoice: Invoice): Record<string, any>[] {
       quantity: 1,
       measuringUnit: UNIT,
       currency: invoice.currency,
-      vatName: config.oblio.vatName || null,
+      vatName: config.oblio.vatName || undefined,
       vatPercentage: vatPercent(Number(invoice.taxRate)),
-      vatIncluded: false,
+      // Oblio takes the flag as a number: the price is VAT excluded, the VAT is added on top
+      vatIncluded: 0,
       save: 0,
     }),
   ];
@@ -189,9 +192,10 @@ function paymentProducts(payment: Payment, videoTitle: string): Record<string, a
       quantity: 1,
       measuringUnit: UNIT,
       currency: payment.currency,
-      vatName: config.oblio.vatName || null,
+      vatName: config.oblio.vatName || undefined,
       vatPercentage: vatPercent(rate),
-      vatIncluded: false,
+      // Oblio takes the flag as a number: the price is VAT excluded, the VAT is added on top
+      vatIncluded: 0,
       save: 0,
     }),
   ];

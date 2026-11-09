@@ -12,6 +12,7 @@ import { config } from '../../config.ts';
 import { db } from '../../db/index.ts';
 import { AuditService } from '../audit/audit.service.ts';
 import { EmailService } from '../email/email.service.ts';
+import { OblioError, OblioService } from '../oblio/oblio.service.ts';
 import { SettingsService } from '../settings/settings.service.ts';
 
 /** FGO accepts roughly one request per second: keep a hard minimum between two calls. */
@@ -303,6 +304,27 @@ async function fetchPdf(url: string | null): Promise<Buffer | null> {
   }
 }
 
+/**
+ * Oblio serves its PDFs from its own hosts, so the FGO host check does not apply: only the
+ * content type is verified. Any problem returns null and the email goes out with the link only.
+ */
+async function fetchOblioPdf(url: string | null): Promise<Buffer | null> {
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(PDF_TIMEOUT_MS) });
+    if (!response.ok) return null;
+    if (!String(response.headers.get('content-type') || '').toLowerCase().includes('pdf')) return null;
+    if (Number(response.headers.get('content-length') || 0) > PDF_MAX_BYTES) return null;
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > PDF_MAX_BYTES) return null;
+    return bytes;
+  } catch (err: any) {
+    console.error('[FgoService] Could not download the Oblio invoice PDF:', err?.message);
+    return null;
+  }
+}
+
 /** 1, 5, 15, 60, 180, 360, 720 minutes; a 429 answer can push the next attempt further. */
 function retryDelayMs(attempts: number, err: any): number {
   const index = Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MINUTES.length - 1);
@@ -320,12 +342,21 @@ export class FgoService {
   private static stopping = false;
 
   /**
-   * Runs the due invoices once: FGO enabled, one worker at a time, oldest invoice first.
+   * Runs the due invoices once: FGO or Oblio enabled, one worker at a time, oldest invoice first.
    */
   // ponytail: un singur proces, coadă în memorie; lock în DB dacă rulezi mai multe instanțe.
   public static async processDue(): Promise<void> {
     if (FgoService.stopping) return;
-    if (!config.fgo.enabled) return;
+    if (!config.fgo.enabled && !config.oblio.enabled) return;
+
+    // The proformas of the checkouts that were never paid are cancelled by this same pass
+    if (config.oblio.enabled) {
+      try {
+        await OblioService.cancelAbandonedProformas();
+      } catch (err: any) {
+        console.warn('[FgoService] Cancelling the abandoned proformas failed:', err?.message);
+      }
+    }
 
     if (FgoService.running) {
       FgoService.rerun = true;
@@ -631,9 +662,20 @@ export class FgoService {
   public static async resendEmail(id: string): Promise<boolean> {
     const invoice = await db.invoice.findUnique({ where: { id } });
     if (!invoice) throw new Error('Factura nu există.');
-    if (!invoice.fgoPdfUrl) throw new Error('Factura nu are încă un PDF emis de FGO.');
+    if (!invoice.fgoPdfUrl) {
+      throw new Error(
+        invoice.invoiceProvider === 'OBLIO'
+          ? 'Factura nu are încă un PDF emis de Oblio.'
+          : 'Factura nu are încă un PDF emis de FGO.'
+      );
+    }
 
-    const pdf = await fetchPdf(invoice.fgoPdfUrl);
+    // The Oblio link is not on fgo.ro: it is downloaded directly, the content type being the only check
+    const pdf =
+      invoice.invoiceProvider === 'OBLIO'
+        ? await fetchOblioPdf(invoice.fgoPdfUrl)
+        : await fetchPdf(invoice.fgoPdfUrl);
+
     return EmailService.sendFgoInvoiceEmail(invoice, pdf, false);
   }
 
@@ -677,12 +719,29 @@ export class FgoService {
     }
   }
 
+  /** The invoicing providers that are switched on right now. */
+  private static activeProviders(): string[] {
+    const providers: string[] = [];
+    if (config.fgo.enabled) providers.push('FGO');
+    if (config.oblio.enabled) providers.push('OBLIO');
+    return providers;
+  }
+
   /** Reads the due invoices and processes them one by one, so one failure never stops the rest. */
   private static async runQueue(): Promise<void> {
+    // Only the invoices of the providers that are on right now. The rows written before Oblio
+    // existed carry no provider at all and they belong to FGO.
+    const providerFilter: Prisma.InvoiceWhereInput = config.fgo.enabled
+      ? { OR: [{ invoiceProvider: { in: FgoService.activeProviders() } }, { invoiceProvider: null }] }
+      : { invoiceProvider: { in: FgoService.activeProviders() } };
+
     const due = await db.invoice.findMany({
       where: {
         fgoStatus: 'PENDING',
-        OR: [{ fgoNextAttemptAt: null }, { fgoNextAttemptAt: { lte: new Date() } }],
+        AND: [
+          providerFilter,
+          { OR: [{ fgoNextAttemptAt: null }, { fgoNextAttemptAt: { lte: new Date() } }] },
+        ],
       },
       orderBy: { seq: 'asc' },
       take: 20,
@@ -690,7 +749,12 @@ export class FgoService {
 
     for (const invoice of due) {
       try {
-        await FgoService.process(invoice);
+        // The fgo* columns hold the state of both providers; the row says who issues the invoice
+        if (invoice.invoiceProvider === 'OBLIO') {
+          await OblioService.process(invoice);
+        } else {
+          await FgoService.process(invoice);
+        }
       } catch (err: any) {
         await FgoService.recordFailure(invoice, err);
       }
@@ -701,8 +765,11 @@ export class FgoService {
   private static async recordFailure(invoice: Invoice, err: any): Promise<void> {
     const fgoError = err?.message || 'Eroare necunoscută la facturarea FGO.';
     const attempts = invoice.fgoAttempts + 1;
-    // Anything that is not an explicit non-retryable FgoError is treated as temporary
-    const retryable = !(err instanceof FgoError) || err.retryable;
+    // Oblio errors follow the same rule as the FGO ones; anything that is not an explicit
+    // non-retryable error of a provider is treated as temporary
+    const knownError = err instanceof FgoError || err instanceof OblioError;
+    const retryable = !knownError || err.retryable;
+    const provider = invoice.invoiceProvider ?? 'FGO';
 
     if (!retryable || attempts >= MAX_ATTEMPTS) {
       await db.invoice.update({
@@ -718,7 +785,13 @@ export class FgoService {
         purchaseId: invoice.purchaseId,
         ip: 'system',
         userAgent: 'FGO Invoice Service',
-        metadata: { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, attempts, error: fgoError },
+        metadata: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          attempts,
+          error: fgoError,
+          provider,
+        },
       });
       return;
     }
