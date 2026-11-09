@@ -505,7 +505,12 @@ export const AdminSettingsTab: React.FC = () => {
       state: oblioState,
       hint: oblioHint,
     },
-  ];
+  ].filter(
+    (item) =>
+      // FGO și Oblio sunt exclusive: arătăm doar furnizorul activ.
+      !(oblioEnabled && item.label === 'Facturare FGO') &&
+      !(fgoEnabled && item.label === 'Facturare Oblio'),
+  );
 
   const renderTestResult = (key: TestKey) => {
     const result = tests[key];
