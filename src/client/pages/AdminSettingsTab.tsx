@@ -449,6 +449,19 @@ export const AdminSettingsTab: React.FC = () => {
       ? `Lipsește ${fgoMissing.join(', ')}.`
       : 'Facturarea FGO este configurată.';
 
+  const oblioEnabled = (byKey['OBLIO_ENABLED']?.value || '').toLowerCase() === 'true';
+  const oblioTest = tests.oblio;
+  const oblioState: LaunchState = !oblioEnabled
+    ? 'fail'
+    : oblioTest
+      ? oblioTest.ok
+        ? 'ok'
+        : 'fail'
+      : 'pending';
+  const oblioHint = !oblioEnabled
+    ? 'Facturarea Oblio este dezactivată.'
+    : oblioTest?.message || 'Se verifică conexiunea Oblio.';
+
   const launchItems: { label: string; state: LaunchState; hint: string }[] = [
     {
       label: 'Adresă site',
@@ -486,6 +499,11 @@ export const AdminSettingsTab: React.FC = () => {
       label: 'Facturare FGO',
       state: fgoState,
       hint: fgoHint,
+    },
+    {
+      label: 'Facturare Oblio',
+      state: oblioState,
+      hint: oblioHint,
     },
   ];
 
