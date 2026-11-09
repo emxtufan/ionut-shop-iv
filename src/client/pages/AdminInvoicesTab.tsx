@@ -1,5 +1,5 @@
 // ==============================================================================
-// IV Concept VOD - Admin: Invoices (FGO) Tab
+// IV Concept VOD - Admin: Invoices (external invoicing) Tab
 // ==============================================================================
 
 import React, { useState, useEffect } from 'react';
@@ -13,7 +13,7 @@ const STATUS_FILTERS = [
   { value: 'FAILED', label: 'Eșuată' },
   { value: 'PENDING', label: 'Se generează' },
   { value: 'DONE', label: 'Emisă' },
-  { value: 'NONE', label: 'Fără FGO' },
+  { value: 'NONE', label: 'Fără facturare externă' },
 ];
 
 interface InvoiceRow {
@@ -31,6 +31,7 @@ interface InvoiceRow {
   buyerAddress: string | null;
   totalAmount: string | number;
   currency: string;
+  invoiceProvider?: string | null;
   fgoStatus: string | null;
   fgoSerie: string | null;
   fgoPdfUrl: string | null;
@@ -54,12 +55,12 @@ function formatAmount(value: string | number, currency: string): string {
   return `${formatted} ${currency}`;
 }
 
-// null means FGO was inactive when the invoice was created, so it was never queued
+// null means no external provider was active when the invoice was created, so it was never queued
 function fgoState(status?: string | null): [string, string] {
   if (status === 'DONE') return ['green', 'Emisă'];
   if (status === 'PENDING') return ['blue', 'Se generează'];
   if (status === 'FAILED') return ['red', 'Eșuată'];
-  return ['default', 'Fără FGO'];
+  return ['default', 'Fără facturare externă'];
 }
 
 export const AdminInvoicesTab: React.FC = () => {
@@ -180,11 +181,22 @@ export const AdminInvoicesTab: React.FC = () => {
       },
     },
     {
+      title: 'Serie',
+      key: 'fgoSerie',
+      width: 160,
+      render: (_: any, record: InvoiceRow) => (
+        <div className="flex items-center gap-1">
+          <span className="text-xs font-mono text-ink whitespace-nowrap">{record.fgoSerie || '—'}</span>
+          <Tag>{record.invoiceProvider ?? 'FGO'}</Tag>
+        </div>
+      ),
+    },
+    {
       title: 'Email trimis',
       key: 'invoiceEmailedAt',
       width: 120,
       render: (_: any, record: InvoiceRow) => {
-        // Local (non-FGO) invoices never track email delivery
+        // Local invoices without an external provider never track email delivery
         if (!record.fgoStatus) return <span className="text-xs text-muted">—</span>;
         return (
           <Tag color={record.invoiceEmailedAt ? 'green' : 'default'}>
@@ -245,7 +257,7 @@ export const AdminInvoicesTab: React.FC = () => {
 
           {record.fgoSerie && !record.fgoStornoWanted && isSuperAdmin && (
             <Popconfirm
-              title="Se emite factură storno în FGO. Acțiunea nu se anulează automat."
+              title="Se emite factură storno la furnizorul de facturare externă. Acțiunea nu se anulează automat."
               okText="Stornează"
               cancelText="Anulează"
               okButtonProps={{ danger: true }}
@@ -287,7 +299,7 @@ export const AdminInvoicesTab: React.FC = () => {
         <Alert
           type="warning"
           showIcon
-          message={`${failedCount} facturi nu au putut fi emise în FGO și așteaptă o reîncercare.`}
+          message={`${failedCount} facturi nu au putut fi emise prin facturarea externă și așteaptă o reîncercare.`}
         />
       )}
 
@@ -308,11 +320,11 @@ export const AdminInvoicesTab: React.FC = () => {
           expandedRowRender: (record: InvoiceRow) => (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs py-1">
               {infoRow(
-                'Eroare FGO',
+                'Eroare facturare externă',
                 record.fgoError ? <span className="text-red-700">{record.fgoError}</span> : '—'
               )}
               {infoRow(
-                'Avertisment FGO',
+                'Avertisment facturare externă',
                 record.fgoWarning ? <span className="text-orange-700">{record.fgoWarning}</span> : '—'
               )}
               {infoRow('Tip client', record.buyerType || '—')}

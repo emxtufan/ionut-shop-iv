@@ -5,10 +5,10 @@
 // ==============================================================================
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Input, Switch, Tag, Button, Popconfirm, Alert, message } from 'antd';
+import { Input, Select, Switch, Tag, Button, Popconfirm, Alert, message } from 'antd';
 import { ChangePasswordForm } from '../components/ChangePasswordForm.tsx';
 
-type TestKey = 'bunny' | 'stripe' | 'smtp' | 'fgo';
+type TestKey = 'bunny' | 'stripe' | 'smtp' | 'fgo' | 'oblio';
 type LaunchState = 'ok' | 'fail' | 'pending';
 
 interface SettingView {
@@ -37,9 +37,10 @@ interface TestResult {
 interface FieldDef {
   key: string;
   label: string;
-  type?: 'text' | 'password' | 'switch' | 'percent';
+  type?: 'text' | 'password' | 'switch' | 'percent' | 'select';
   placeholder?: string;
   help?: string;
+  options?: string[];
 }
 
 interface CardDef {
@@ -55,6 +56,7 @@ const TEST_URLS: Record<TestKey, string> = {
   stripe: '/api/admin/settings/test/stripe',
   smtp: '/api/admin/settings/test/smtp',
   fgo: '/api/admin/settings/test/fgo',
+  oblio: '/api/admin/settings/test/oblio',
 };
 
 const TEST_LABELS: Record<TestKey, string> = {
@@ -62,6 +64,7 @@ const TEST_LABELS: Record<TestKey, string> = {
   stripe: 'Testează Stripe',
   smtp: 'Testează emailul',
   fgo: 'Testează FGO',
+  oblio: 'Testează conexiunea',
 };
 
 const CARDS: CardDef[] = [
@@ -171,6 +174,39 @@ const CARDS: CardDef[] = [
     ],
     test: 'fgo',
   },
+  {
+    key: 'oblio',
+    title: 'Facturare Oblio',
+    help: 'Oblio → Setări → Date cont. Cheia API și datele firmei se copiază din contul Oblio. Se folosește exclusiv cu FGO.',
+    fields: [
+      {
+        key: 'OBLIO_ENABLED',
+        label: 'Activează Oblio',
+        type: 'switch',
+        help: 'Exclusiv cu FGO. Proforma se emite la checkout, factura la plată, storno la rambursare totală.',
+      },
+      { key: 'OBLIO_EMAIL', label: 'Email cont Oblio' },
+      { key: 'OBLIO_SECRET', label: 'Cheie API (Setări → Date cont)', type: 'password' },
+      { key: 'OBLIO_CIF', label: 'CIF firmă' },
+      { key: 'OBLIO_SERIES', label: 'Serie factură' },
+      { key: 'OBLIO_PROFORMA_SERIES', label: 'Serie proformă (gol = fără proformă)' },
+      { key: 'OBLIO_STORNO_SERIES', label: 'Serie storno (gol = seria facturii)' },
+      { key: 'OBLIO_VAT_NAME', label: 'Nume cotă TVA în Oblio (opțional, ex. Normala)' },
+      {
+        key: 'OBLIO_COLLECT_TYPE',
+        label: 'Tip încasare',
+        type: 'select',
+        options: ['Card', 'Alta incasare banca', 'Ordin de plata'],
+      },
+      {
+        key: 'OBLIO_SEND_SPV',
+        label: 'Trimite în e-Factura (SPV)',
+        type: 'switch',
+        help: 'Obligatoriu și pentru persoane fizice. Cu Stripe în mod test nu se trimite.',
+      },
+    ],
+    test: 'oblio',
+  },
 ];
 
 // The stored VAT rate is a fraction (0.21); the field shows a percentage (21)
@@ -279,7 +315,8 @@ export const AdminSettingsTab: React.FC = () => {
     }
   };
 
-  const runAllTests = () => Promise.all([runTest('bunny'), runTest('stripe'), runTest('smtp'), runTest('fgo')]);
+  const runAllTests = () =>
+    Promise.all([runTest('bunny'), runTest('stripe'), runTest('smtp'), runTest('fgo'), runTest('oblio')]);
 
   useEffect(() => {
     const boot = async () => {
@@ -523,6 +560,15 @@ export const AdminSettingsTab: React.FC = () => {
             status={error ? 'error' : undefined}
             onChange={(e) => setFieldValue(field.key, e.target.value)}
           />
+        ) : field.type === 'select' ? (
+          <Select
+            value={value || undefined}
+            placeholder={setting.preview || 'Necompletat'}
+            status={error ? 'error' : undefined}
+            options={(field.options || []).map((option) => ({ value: option, label: option }))}
+            onChange={(next) => setFieldValue(field.key, next)}
+            className="w-full"
+          />
         ) : (
           <Input
             value={value}
@@ -609,6 +655,15 @@ export const AdminSettingsTab: React.FC = () => {
               showIcon
               message="Schimbarea bibliotecii face filmele deja încărcate indisponibile."
               description="Filmele existente rămân în biblioteca veche; ele trebuie încărcate din nou în biblioteca nouă."
+            />
+          )}
+
+          {card.key === 'oblio' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="Oblio nu are mediu de test: orice factură emisă e reală."
+              description="Testează cu o serie separată (ex. TEST) și Stripe în mod test."
             />
           )}
 
