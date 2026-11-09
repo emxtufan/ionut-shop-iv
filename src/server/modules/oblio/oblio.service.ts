@@ -777,7 +777,42 @@ export class OblioService {
         .map(item => (item.serie ? `${item.label} "${item.serie}"` : `${item.label} (neconfigurată)`));
 
       if (missing.length) {
-        return { ok: false, message: `Conexiune Oblio reușită, dar lipsește ${missing.join(', ')}.` };
+        let message = `Conexiune Oblio reușită, dar lipsește ${missing.join(', ')}.`;
+
+        if (list.length) {
+          // Show what Oblio does have, so the right series can be copied from the answer
+          const groups = new Map<string, string[]>();
+          for (const item of list) {
+            const name = String(item?.name ?? item?.seriesName ?? '').trim();
+            if (!name) continue;
+            const type = String(item?.type ?? '').trim() || 'Fără tip';
+            const names = groups.get(type) ?? [];
+            names.push(name);
+            groups.set(type, names);
+          }
+          const described = [...groups.entries()].map(([type, names]) => `${type}: ${names.join(', ')}`);
+          message += ` Serii găsite pentru CIF ${config.oblio.cif}: ${described.join('; ')}.`;
+        } else {
+          message += ` Oblio nu are serii pentru CIF ${config.oblio.cif}.`;
+          try {
+            const companies = await request('GET', '/nomenclature/companies');
+            const firms = (Array.isArray(companies) ? companies : [])
+              .map((item: any) => {
+                const cif = String(item?.cif ?? '').trim();
+                const company = String(item?.company ?? item?.name ?? '').trim();
+                if (!cif && !company) return '';
+                return company ? `${cif} (${company})` : cif;
+              })
+              .filter(Boolean);
+            if (firms.length) {
+              message += ` Firme în cont: ${firms.join(', ')} — copiază CIF-ul exact de aici.`;
+            }
+          } catch {
+            // The company list is only a hint: its failure must not hide the missing series
+          }
+        }
+
+        return { ok: false, message };
       }
 
       return { ok: true, message: 'Conexiune Oblio reușită, cu toate seriile necesare.' };
