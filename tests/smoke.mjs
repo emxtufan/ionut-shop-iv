@@ -59,6 +59,8 @@ const SETTINGS_CLIENT_IP = `172.16.${crypto.randomInt(1, 255)}.${crypto.randomIn
 // Case M (FGO invoicing) talks to its own server process; this IP only reaches that process,
 // so the per-IP rate limiter buckets it touches start empty as well
 const FGO_CLIENT_IP = `172.20.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
+// Case N (Oblio) also talks to its own server process, with its own client IP buckets
+const OBLIO_CLIENT_IP = `172.24.${crypto.randomInt(1, 255)}.${crypto.randomInt(1, 255)}`;
 
 const BUYER_EMAIL = `${PREFIX}-buyer@example.com`;
 const BUYER_USERNAME = `${PREFIX}-buyer`;
@@ -99,6 +101,8 @@ const state = {
   settingsTouched: [],
   // Handles of the case M harness (mock FGO, mock SMTP, server process), closed in the `finally`
   fgo: null,
+  // Handles of the case N harness (mock Oblio, mock SMTP, server process), closed in the `finally`
+  oblio: null,
 };
 
 let failures = 0;
@@ -926,6 +930,249 @@ function signedWebhookTo(event) {
   const payload = JSON.stringify(event);
   const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: STRIPE_WEBHOOK_SECRET });
   return fgoApi('POST', '/api/payments/webhook', { rawBody: payload, headers: { 'stripe-signature': signature } });
+}
+
+// ------------------------------------------------------------------------------
+// Case N harness: the same pattern as case M, with a local mock of the Oblio API. The
+// credentials and the series are written through the admin settings API before the second
+// server process starts (it reads them from the database on boot); only the switch and the
+// API URL, which have no admin field, are passed in its environment.
+// ------------------------------------------------------------------------------
+const OBLIO_API_TOKEN = 'oblio_test_access_token';
+const OBLIO_API_EMAIL = `${PREFIX}-oblio-api@example.com`;
+const OBLIO_API_SECRET = 'oblio_test_secret';
+const OBLIO_API_CIF = 'RO12345678';
+const OBLIO_SERIES = 'TST';
+const OBLIO_PROFORMA_SERIES = 'PTST';
+const OBLIO_PROFORMA_NUMBER = '0001';
+const OBLIO_INVOICE_NUMBER = '0001';
+const OBLIO_STORNO_NUMBER = '0002';
+const OBLIO_BUYER_EMAIL = `${PREFIX}-oblio@example.com`;
+const OBLIO_BUYER_USERNAME = `${PREFIX}-oblio`;
+const OBLIO_BUYER_PASSWORD = 'ParolaOblio123!';
+const OBLIO_VALID_CUI = '18547290';
+const OBLIO_BILLING = {
+  type: 'PJ',
+  name: `${PREFIX} Firma Oblio S.R.L.`,
+  cui: OBLIO_VALID_CUI,
+  regCom: `J40/${RAND}`,
+  country: 'RO',
+  county: 'B',
+  city: 'București',
+  address: 'Str. Testului nr. 2, sector 1',
+  phone: '+40712345679',
+};
+
+// Mock of the Oblio API: token, series nomenclature, proforma, invoice + storno, cancel, PDF
+async function startOblioMock() {
+  const mock = {
+    url: '',
+    requests: [],
+  };
+
+  mock.server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const path = String(req.url || '').split('?')[0];
+
+      // The token request and the form-style calls are urlencoded, the documents are JSON
+      let body = null;
+      if (raw) {
+        if (String(req.headers['content-type'] || '').includes('application/x-www-form-urlencoded')) {
+          body = Object.fromEntries(new URLSearchParams(raw));
+        } else {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            body = null;
+          }
+        }
+      }
+
+      mock.requests.push({ method: req.method, path, headers: req.headers, body });
+
+      const send = payload => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: payload, status: 200, statusMessage: 'ok' }));
+      };
+
+      if (req.method === 'POST' && path === '/authorize/token') {
+        return send({ access_token: OBLIO_API_TOKEN, expires_in: '3600' });
+      }
+      if (req.method === 'GET' && path === '/nomenclature/series') {
+        return send([
+          { name: OBLIO_SERIES, type: 'Factura' },
+          { name: OBLIO_PROFORMA_SERIES, type: 'Proforma' },
+        ]);
+      }
+      if (req.method === 'POST' && path === '/docs/proforma') {
+        return send({
+          seriesName: OBLIO_PROFORMA_SERIES,
+          number: OBLIO_PROFORMA_NUMBER,
+          link: `${mock.url}/pdf/proforma`,
+        });
+      }
+      if (req.method === 'POST' && path === '/docs/invoice') {
+        // The storno is the call that references the fiscal invoice
+        if (body?.referenceDocument?.type === 'Factura') {
+          return send({ seriesName: OBLIO_SERIES, number: OBLIO_STORNO_NUMBER, link: `${mock.url}/pdf/storno` });
+        }
+        return send({ seriesName: OBLIO_SERIES, number: OBLIO_INVOICE_NUMBER, link: `${mock.url}/pdf/invoice` });
+      }
+      if (req.method === 'PUT' && path === '/docs/proforma/cancel') {
+        return send({ seriesName: body?.seriesName || null, number: body?.number || null });
+      }
+      if (req.method === 'POST' && path === '/docs/einvoice') {
+        return send({ code: 0, text: 'ok' });
+      }
+      if (req.method === 'GET' && path.startsWith('/pdf/')) {
+        res.writeHead(200, { 'content-type': 'application/pdf' });
+        return res.end('%PDF-1.4 test');
+      }
+
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 404, statusMessage: 'NOT_FOUND' }));
+    });
+  });
+
+  mock.sockets = trackSockets(mock.server);
+  const port = await listenOnEphemeralPort(mock.server);
+  mock.url = `http://127.0.0.1:${port}`;
+  return mock;
+}
+
+// Second server process for case N: same sources and database, Oblio switched on
+async function startOblioServer(harness) {
+  const port = await freeTcpPort();
+  harness.baseUrl = `http://127.0.0.1:${port}`;
+
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      TRUST_PROXY_HOPS: '1',
+      APP_URL: harness.baseUrl,
+      // No admin field for these two: the switch and the API base URL come from the environment
+      OBLIO_ENABLED: 'true',
+      OBLIO_API_URL: harness.mock.url,
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: String(harness.smtp.port),
+      SMTP_SECURE: 'false',
+      SMTP_USER: '',
+      SMTP_PASS: '',
+      SMTP_FROM: 'Smoke Test <smoke@example.com>',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  harness.child = child;
+
+  const remember = chunk => {
+    for (const line of String(chunk).split('\n')) {
+      if (!line.trim()) continue;
+      harness.output.push(line.trimEnd());
+      if (harness.output.length > 40) harness.output.shift();
+    }
+  };
+  child.stdout.on('data', remember);
+  child.stderr.on('data', remember);
+  child.on('exit', (code, signal) => {
+    harness.exit = { code, signal };
+  });
+
+  const ready = await waitFor(
+    async () => {
+      if (harness.exit) {
+        throw new Error(`serverul Oblio a ieșit (cod ${harness.exit.code}): ${harness.output.slice(-8).join(' | ')}`);
+      }
+      try {
+        const response = await fetch(`${harness.baseUrl}/api/health`);
+        return response.ok ? response.status : null;
+      } catch {
+        return null;
+      }
+    },
+    { timeoutMs: 90_000, intervalMs: 250 }
+  );
+
+  assert.ok(ready, `N: serverul Oblio nu a pornit în 90s: ${harness.output.slice(-8).join(' | ')}`);
+}
+
+async function startOblioHarness() {
+  const harness = {
+    mock: null,
+    smtp: null,
+    child: null,
+    baseUrl: null,
+    exit: null,
+    output: [],
+  };
+  state.oblio = harness;
+
+  harness.mock = await startOblioMock();
+  harness.smtp = await startSmtpSink();
+  await startOblioServer(harness);
+
+  return harness;
+}
+
+async function stopOblioHarness() {
+  const harness = state.oblio;
+  if (!harness) return;
+  state.oblio = null;
+
+  console.log('\n— cleanup Oblio —');
+
+  if (harness.child && !harness.exit) {
+    harness.child.kill('SIGTERM');
+    const stopped = await waitFor(() => harness.exit, { timeoutMs: 10_000, intervalMs: 100 });
+    if (!stopped) harness.child.kill('SIGKILL');
+  }
+
+  await closeServer(harness.mock?.server, harness.mock?.sockets);
+  await closeServer(harness.smtp?.server, harness.smtp?.sockets);
+
+  console.log('  serverul Oblio + mock-urile au fost oprite');
+}
+
+// Same HTTP helper as `api`, aimed at the case N server and its own client IP
+async function oblioApi(method, path, options = {}) {
+  const { token, body, rawBody, headers = {} } = options;
+
+  const requestHeaders = {
+    'user-agent': USER_AGENT,
+    'x-forwarded-for': OBLIO_CLIENT_IP,
+  };
+
+  let payload;
+  if (rawBody !== undefined) {
+    payload = rawBody;
+    requestHeaders['content-type'] = 'application/json';
+  } else if (body !== undefined) {
+    payload = JSON.stringify(body);
+    requestHeaders['content-type'] = 'application/json';
+  }
+  if (token) requestHeaders.cookie = `${SESSION_COOKIE}=${token}`;
+  Object.assign(requestHeaders, headers);
+
+  const response = await fetch(`${state.oblio.baseUrl}${path}`, {
+    method,
+    headers: requestHeaders,
+    body: payload,
+    redirect: 'manual',
+  });
+
+  const text = await response.text();
+  return { status: response.status, headers: response.headers, text, json: parseJson(text) };
+}
+
+// Same signed Stripe webhook as `signedWebhook`, delivered to the case N server
+function signedWebhookToOblio(event) {
+  const payload = JSON.stringify(event);
+  const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: STRIPE_WEBHOOK_SECRET });
+  return oblioApi('POST', '/api/payments/webhook', { rawBody: payload, headers: { 'stripe-signature': signature } });
 }
 
 // ==============================================================================
@@ -2191,9 +2438,325 @@ try {
       }
     }
   });
+
+  await runCase('N) Oblio: proformă, emitere, storno, SPV sărit, email, proformă abandonată', async () => {
+    // The Oblio credentials and the series are saved from the admin panel, exactly as an admin
+    // would; the case N server process reads them from the database when it boots
+    expectStatus(await putSettings({ FGO_ENABLED: 'false' }), 200, 'N setări FGO_ENABLED false');
+    expectStatus(
+      await putSettings({
+        OBLIO_EMAIL: OBLIO_API_EMAIL,
+        OBLIO_SECRET: OBLIO_API_SECRET,
+        OBLIO_CIF: OBLIO_API_CIF,
+        OBLIO_SERIES,
+        OBLIO_PROFORMA_SERIES,
+        OBLIO_COLLECT_TYPE: 'Card',
+      }),
+      200,
+      'N setări Oblio'
+    );
+
+    const { mock, smtp } = await startOblioHarness();
+
+    // --- Fixtures: Oblio buyer, one video for the flow, one for the abandoned proforma ------
+    const hashPassword = await loadHashPassword();
+    const buyer = await prisma.user.create({
+      data: {
+        email: OBLIO_BUYER_EMAIL,
+        username: OBLIO_BUYER_USERNAME,
+        passwordHash: hashPassword(OBLIO_BUYER_PASSWORD),
+        role: 'USER',
+      },
+    });
+    state.userIds.push(buyer.id);
+    state.emails.push(buyer.email);
+    const buyerToken = await createPrismaSession(buyer.id);
+
+    const makeVideo = async suffix => {
+      const video = await prisma.video.create({
+        data: {
+          title: `${PREFIX} oblio ${suffix}`,
+          slug: `${PREFIX}-oblio-${suffix}`,
+          description: 'Film de test pentru facturarea Oblio.',
+          categoryId: state.ids.catMain,
+          tags: ['smoke', RAND],
+          priceAmount: 10,
+          currency: 'EUR',
+          durationSeconds: 60,
+          status: 'READY',
+          isPublished: true,
+          publishedAt: new Date(),
+          bunnyVideoId: `${PREFIX}-bunny-oblio-${suffix}`,
+        },
+      });
+      state.videoIds.push(video.id);
+      return video;
+    };
+
+    const videoPaid = await makeVideo('principal');
+    const videoAbandoned = await makeVideo('abandonata');
+
+    // Checkout and signed webhook, exactly like cases C/D/M (real Stripe test session)
+    const checkout = async (videoId, label) => {
+      await avoidMinuteBoundary();
+      const response = await oblioApi('POST', `/api/payments/checkout/${videoId}`, {
+        token: buyerToken,
+        body: { acceptedTerms: true, billing: OBLIO_BILLING },
+      });
+      expectStatus(response, 200, `N checkout ${label}`);
+      const payment = await prisma.payment.findFirst({
+        where: { userId: buyer.id, videoId },
+        orderBy: { createdAt: 'desc' },
+      });
+      assert.ok(payment, `N: lipsește rândul Payment după checkout (${label})`);
+      state.stripeSessionIds.push(payment.checkoutSessionId);
+      return payment;
+    };
+
+    const waitProforma = async (paymentId, label) => {
+      const payment = await waitFor(
+        async () => {
+          const row = await prisma.payment.findUnique({ where: { id: paymentId } });
+          return row && row.proformaSerie ? row : null;
+        },
+        { timeoutMs: 45_000, intervalMs: 250 }
+      );
+      assert.ok(payment, `N: ${label}`);
+      return payment;
+    };
+
+    const waitInvoice = async (id, check, label) => {
+      const invoice = await waitFor(
+        async () => {
+          const row = await prisma.invoice.findUnique({ where: { id } });
+          return row && check(row) ? row : null;
+        },
+        { timeoutMs: 60_000, intervalMs: 250 }
+      );
+      assert.ok(invoice, `N: ${label}`);
+      return invoice;
+    };
+
+    // --- 1. The connection test reads the token and the series from Oblio -------------------
+    const connection = await oblioApi('POST', '/api/admin/settings/test/oblio', { token: state.tokens.super });
+    expectStatus(connection, 200, 'N test conexiune Oblio');
+    assert.equal(connection.json?.ok, true, `N: testul conexiunii Oblio nu e ok (${connection.json?.message})`);
+
+    const tokenRequest = mock.requests.find(request => request.method === 'POST' && request.path === '/authorize/token');
+    assert.ok(tokenRequest, 'N: nu a fost cerut un token de acces de la Oblio');
+    assert.equal(tokenRequest.body?.client_id, OBLIO_API_EMAIL, 'N: cererea de token nu trimite emailul din setări');
+    assert.equal(tokenRequest.body?.client_secret, OBLIO_API_SECRET, 'N: cererea de token nu trimite secretul din setări');
+
+    const seriesRequest = mock.requests.find(
+      request => request.method === 'GET' && request.path === '/nomenclature/series'
+    );
+    assert.ok(seriesRequest, 'N: nomenclatorul de serii nu a fost citit');
+    assert.equal(
+      seriesRequest.headers.authorization,
+      `Bearer ${OBLIO_API_TOKEN}`,
+      'N: nomenclatorul nu a fost cerut cu tokenul primit'
+    );
+
+    // --- 2. The checkout issues the proforma; the fiscal invoice waits for the payment ------
+    const payment = await checkout(videoPaid.id, 'plata 1');
+    const withProforma = await waitProforma(payment.id, 'proforma nu a fost emisă la checkout');
+    assert.equal(withProforma.proformaSerie, OBLIO_PROFORMA_SERIES, `N: proformaSerie e ${withProforma.proformaSerie}`);
+    assert.equal(withProforma.proformaNumar, OBLIO_PROFORMA_NUMBER, `N: proformaNumar e ${withProforma.proformaNumar}`);
+    assert.equal(withProforma.proformaPdfUrl, `${mock.url}/pdf/proforma`, 'N: proformaPdfUrl nu e linkul dat de mock');
+
+    const proformaRequest = mock.requests.find(
+      request => request.method === 'POST' && request.path === '/docs/proforma'
+    );
+    assert.ok(proformaRequest, 'N: nu a fost trimisă nicio cerere POST /docs/proforma');
+    assert.equal(proformaRequest.body?.seriesName, OBLIO_PROFORMA_SERIES, 'N: body.seriesName al proformei e greșit');
+    assert.equal(proformaRequest.body?.cif, OBLIO_API_CIF, 'N: body.cif al proformei e greșit');
+    assert.equal(proformaRequest.body?.client?.name, OBLIO_BILLING.name, 'N: client.name al proformei e greșit');
+
+    // --- 3. Payment → fiscal invoice in Oblio, SPV skipped, PDF emailed ---------------------
+    const delivered = await signedWebhookToOblio(
+      eventOf(
+        'checkout.session.completed',
+        {
+          id: payment.checkoutSessionId,
+          object: 'checkout.session',
+          mode: 'payment',
+          payment_status: 'paid',
+          payment_intent: `${PI_INTENT}_oblio1`,
+          invoice: null,
+          amount_total: 1000,
+          currency: 'eur',
+          created: Math.floor(Date.now() / 1000),
+          metadata: { userId: buyer.id, videoId: videoPaid.id },
+        },
+        'oblio-completed-1'
+      )
+    );
+    expectStatus(delivered, 200, 'N webhook plata 1');
+
+    const purchase = await waitFor(() =>
+      prisma.purchase.findFirst({ where: { userId: buyer.id, videoId: videoPaid.id } })
+    );
+    assert.ok(purchase, 'N: nu s-a creat Purchase pentru plata 1');
+    const draft = await waitFor(() => prisma.invoice.findFirst({ where: { purchaseId: purchase.id } }));
+    assert.ok(draft, 'N: nu s-a creat Invoice pentru plata 1');
+
+    const done = await waitInvoice(draft.id, invoice => invoice.fgoStatus === 'DONE', 'factura nu ajunge DONE');
+    assert.equal(done.invoiceProvider, 'OBLIO', `N: invoiceProvider e ${done.invoiceProvider}`);
+    assert.equal(done.fgoSerie, OBLIO_SERIES, `N: fgoSerie e ${done.fgoSerie}`);
+    assert.equal(done.fgoNumar, OBLIO_INVOICE_NUMBER, `N: fgoNumar e ${done.fgoNumar}`);
+    assert.equal(
+      done.invoiceNumber,
+      `${OBLIO_SERIES}-${OBLIO_INVOICE_NUMBER}`,
+      `N: invoiceNumber e ${done.invoiceNumber}`
+    );
+    assert.equal(done.fgoPdfUrl, `${mock.url}/pdf/invoice`, 'N: fgoPdfUrl nu e linkul dat de mock');
+    assert.ok(done.fgoPaidAt, 'N: încasarea nu a fost înregistrată (fgoPaidAt gol)');
+
+    const emission = mock.requests.find(
+      request =>
+        request.method === 'POST' &&
+        request.path === '/docs/invoice' &&
+        request.body?.referenceDocument?.type !== 'Factura'
+    );
+    assert.ok(emission, 'N: factura fiscală nu a fost cerută prin POST /docs/invoice');
+    assert.equal(
+      emission.headers.authorization,
+      `Bearer ${OBLIO_API_TOKEN}`,
+      'N: Authorization greșit pe POST /docs/invoice'
+    );
+    assert.equal(emission.body?.seriesName, OBLIO_SERIES, 'N: body.seriesName al facturii e greșit');
+    assert.equal(emission.body?.collect?.type, 'Card', `N: collect.type e ${emission.body?.collect?.type}`);
+    assert.equal(
+      emission.body?.referenceDocument?.type,
+      'Proforma',
+      `N: referenceDocument.type e ${emission.body?.referenceDocument?.type}`
+    );
+    assert.equal(
+      emission.body?.referenceDocument?.seriesName,
+      OBLIO_PROFORMA_SERIES,
+      'N: referenceDocument nu trimite la seria proformei'
+    );
+    assert.equal(
+      emission.body?.referenceDocument?.number,
+      OBLIO_PROFORMA_NUMBER,
+      'N: referenceDocument nu trimite la numărul proformei'
+    );
+
+    // sk_test_ means the invoice never reaches SPV (ANAF)
+    assert.ok(
+      !mock.requests.some(request => request.path === '/docs/einvoice'),
+      'N: factura a fost trimisă în SPV deși plata e Stripe de test'
+    );
+
+    const invoiceMail = await waitFor(() => smtp.messages.find(message => message.includes('application/pdf')) || null, {
+      timeoutMs: 15_000,
+      intervalMs: 250,
+    });
+    assert.ok(invoiceMail, 'N: emailul trimis pe SMTP nu conține un atașament application/pdf');
+    assert.ok(
+      invoiceMail.includes(`Factura-${OBLIO_SERIES}-${OBLIO_INVOICE_NUMBER}.pdf`),
+      `N: emailul nu are atașată factura ${OBLIO_SERIES}-${OBLIO_INVOICE_NUMBER}`
+    );
+
+    // --- 4. Full refund → storno on the fiscal invoice -------------------------------------
+    const refund = await signedWebhookToOblio(
+      eventOf(
+        'charge.refunded',
+        {
+          id: `${PREFIX}-charge-oblio-1`,
+          object: 'charge',
+          refunded: true,
+          amount: 1000,
+          currency: 'eur',
+          payment_intent: `${PI_INTENT}_oblio1`,
+        },
+        'oblio-refund-1'
+      )
+    );
+    expectStatus(refund, 200, 'N webhook charge.refunded');
+    assert.equal(refund.json?.status, 'REVOKED', `N: refund a răspuns ${refund.json?.status}`);
+
+    const stornoDone = await waitInvoice(
+      draft.id,
+      invoice => Boolean(invoice.fgoStornoDoneAt) && invoice.fgoStatus === 'DONE',
+      'stornarea nu a fost emisă'
+    );
+    const stornoRequest = mock.requests.find(
+      request =>
+        request.method === 'POST' &&
+        request.path === '/docs/invoice' &&
+        request.body?.referenceDocument?.type === 'Factura'
+    );
+    assert.ok(stornoRequest, 'N: nu a fost trimisă nicio cerere de storno');
+    assert.equal(
+      stornoRequest.body?.referenceDocument?.refund,
+      1,
+      `N: referenceDocument.refund e ${stornoRequest.body?.referenceDocument?.refund}`
+    );
+    assert.equal(
+      stornoRequest.body?.referenceDocument?.seriesName,
+      OBLIO_SERIES,
+      'N: storno nu referă seria facturii'
+    );
+    assert.equal(
+      stornoRequest.body?.referenceDocument?.number,
+      OBLIO_INVOICE_NUMBER,
+      'N: storno nu referă numărul facturii'
+    );
+    assert.equal(stornoDone.fgoStornoSerie, OBLIO_SERIES, `N: fgoStornoSerie e ${stornoDone.fgoStornoSerie}`);
+    assert.equal(stornoDone.fgoStornoNumar, OBLIO_STORNO_NUMBER, `N: fgoStornoNumar e ${stornoDone.fgoStornoNumar}`);
+
+    // --- 5. A proforma left behind by an unpaid checkout is cancelled ----------------------
+    const abandoned = await checkout(videoAbandoned.id, 'proformă abandonată');
+    const abandonedProforma = await waitProforma(
+      abandoned.id,
+      'proforma plății nefinalizate nu a fost emisă'
+    );
+    assert.equal(
+      abandonedProforma.proformaSerie,
+      OBLIO_PROFORMA_SERIES,
+      `N: proformaSerie e ${abandonedProforma.proformaSerie}`
+    );
+
+    // Only proformas older than 25h are cancelled: age the payment instead of waiting
+    await prisma.payment.update({
+      where: { id: abandoned.id },
+      data: { createdAt: new Date(Date.now() - 26 * 60 * 60 * 1000) },
+    });
+
+    // Any admin retry wakes the queue up, and every pass cancels the abandoned proformas first
+    const kick = await oblioApi('POST', `/api/admin/invoices/${draft.id}/retry`, { token: state.tokens.admin });
+    expectStatus(kick, 200, 'N retry care pornește coada');
+
+    const canceled = await waitFor(
+      async () => {
+        const row = await prisma.payment.findUnique({ where: { id: abandoned.id } });
+        return row && row.proformaCanceledAt ? row : null;
+      },
+      { timeoutMs: 45_000, intervalMs: 250 }
+    );
+    assert.ok(canceled, 'N: proforma abandonată nu a fost anulată');
+
+    const cancelRequest = mock.requests.find(
+      request => request.method === 'PUT' && request.path === '/docs/proforma/cancel'
+    );
+    assert.ok(cancelRequest, 'N: nu a fost trimisă nicio cerere PUT /docs/proforma/cancel');
+    assert.equal(
+      cancelRequest.body?.seriesName,
+      OBLIO_PROFORMA_SERIES,
+      `N: anularea trimite seria ${cancelRequest.body?.seriesName}`
+    );
+    assert.equal(
+      cancelRequest.body?.number,
+      OBLIO_PROFORMA_NUMBER,
+      `N: anularea trimite numărul ${cancelRequest.body?.number}`
+    );
+    assert.equal(cancelRequest.body?.cif, OBLIO_API_CIF, `N: anularea trimite CIF-ul ${cancelRequest.body?.cif}`);
+  });
 } finally {
-  // The case M server process and its mocks first, then the settings (through the API, so the
-  // main server reloads the env values), then the DB rows
+  // The case N and case M server processes and their mocks first, then the settings (through
+  // the API, so the main server reloads the env values), then the DB rows
+  await stopOblioHarness();
   await stopFgoHarness();
   await restoreSettings();
   await cleanup();
