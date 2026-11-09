@@ -565,35 +565,37 @@ export function generatePasswordResetEmail(data: PasswordResetEmailData): { subj
 }
 
 /**
- * 5. FGO Fiscal Invoice / Storno Email (PDF-ul fiscal emis de FGO)
+ * Contact address used in the footer: the company email from the settings, else the SMTP sender.
+ * Read live, exactly like `company` above, so a change saved in the admin panel applies at once.
+ */
+function contactEmail(): string {
+  const raw = (config.company.email || config.smtp.from || '').trim();
+  return (raw.match(/<([^<>]+)>/)?.[1] || raw).trim();
+}
+
+/**
+ * 5. Fiscal Invoice / Storno Email (the PDF issued for the purchase is attached)
  */
 export function generateFgoInvoiceEmail(data: FgoInvoiceEmailData): { subject: string; html: string; text: string } {
-  const label = data.isStorno ? 'Factură storno' : 'Factura';
-  const subject = `${label} ${data.invoiceNumber} — ${company.name}`;
   const total = `${data.total.toFixed(2)} ${data.currency}`;
 
-  const intro = `${data.isStorno
-    ? 'Factura inițială a fost stornată. Documentul emis de FGO este atașat acestui email.'
-    : 'Factura fiscală a fost emisă. Documentul emis de FGO este atașat acestui email.'}${data.pdfUrl ? ' Îl poți descărca oricând și cu butonul de mai jos.' : ''}`;
+  const subject = data.isStorno
+    ? `Factura de stornare ${data.invoiceNumber} · IVconcept`
+    : `Factura ta ${data.invoiceNumber} · IVconcept`;
 
-  const body = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:15px;line-height:1.6;color:#444444;text-align:left;">
-                <tr>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Cumpărător</td>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;">${escapeHtml(data.buyerName)}</td>
-                </tr>
-                <tr>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Număr document</td>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;font-family:monospace;">${escapeHtml(data.invoiceNumber)}</td>
-                </tr>
-                <tr>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;color:#888888;">Total (TVA inclus)</td>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;text-align:right;color:#111111;font-weight:700;">${escapeHtml(total)}</td>
-                </tr>
-                <tr>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;border-bottom:1px solid #e5e5e5;color:#888888;">Data emiterii</td>
-                  <td style="padding:12px 0;border-top:1px solid #e5e5e5;border-bottom:1px solid #e5e5e5;text-align:right;color:#111111;">${escapeHtml(data.issuedAt)}</td>
-                </tr>
-              </table>`;
+  const title = data.isStorno ? 'Rambursarea a fost procesată' : 'Mulțumim pentru comandă! 🎬';
+
+  const intro = data.isStorno
+    ? `Am returnat ${total} pentru comanda ta. Factura de stornare ${data.invoiceNumber} este atașată acestui email.`
+    : `Plata de ${total} a fost confirmată. Factura ${data.invoiceNumber} este atașată acestui email.`;
+
+  const button = data.pdfUrl
+    ? { label: data.isStorno ? 'Descarcă factura de stornare' : 'Descarcă factura', url: data.pdfUrl }
+    : undefined;
+
+  const email = contactEmail();
+  const footerNote = 'Primești acest email pentru că ai cumpărat acces la un film pe IVconcept.' +
+    (email ? ` Pentru întrebări, scrie-ne la ${email}.` : '');
 
   // Company details in the info box, only the ones configured in the admin panel
   const companyLines = [
@@ -603,21 +605,25 @@ export function generateFgoInvoiceEmail(data: FgoInvoiceEmailData): { subject: s
   ].filter(Boolean);
 
   const html = renderLayout({
-    title: `${label} ${data.invoiceNumber}`,
+    title,
     intro,
-    button: data.pdfUrl ? { label: 'Descarcă factura PDF', url: data.pdfUrl } : undefined,
-    body,
-    footerNote: 'Acest email a fost trimis automat de către platforma IV Concept VOD.',
+    button,
+    footerNote,
     infoBox: companyLines.length ? companyLines.join('<br>') : undefined,
   });
 
-  const text = `${label} ${data.invoiceNumber}\n` +
-    `${company.name} (CIF ${company.cif})\n\n` +
-    `Cumpărător: ${data.buyerName}\n` +
-    `Data emiterii: ${data.issuedAt}\n` +
-    `Total (TVA inclus): ${total}\n` +
-    (data.pdfUrl ? `Descarcă factura: ${data.pdfUrl}\n` : '') +
-    `\n${company.name}`;
+  // Same sentences as the HTML version, in the same order
+  const companyTextLines = [
+    company.name,
+    company.cif ? `CUI: ${company.cif}` : '',
+    company.address,
+  ].filter(Boolean);
+
+  const text = `${title}\n\n` +
+    `${intro}\n\n` +
+    (button ? `${button.label}: ${button.url}\n\n` : '') +
+    `${footerNote}\n` +
+    (companyTextLines.length ? `\n${companyTextLines.join('\n')}\n` : '');
 
   return { subject, html, text };
 }
